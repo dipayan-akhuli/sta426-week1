@@ -1,6 +1,6 @@
-## sta426-week1
+## sta426-exercises
 
-My solution for Week 1 Exercise Part B has been updated.
+I will be uploading my solutions to all exercises for STA426 here.
 
 On a completely unrelated note, here is the cutest chair ever!
 
