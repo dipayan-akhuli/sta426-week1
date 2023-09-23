@@ -1,6 +1,6 @@
 ## sta426-week1
 
-This is where the exercise for week 1 will go.
+My solution for Week 1 Exercise Part B has been updated.
 
 On a completely unrelated note, here is the cutest chair ever!
 
