@@ -1,6 +1,6 @@
 ## sta426-exercises
 
-I will be uploading my solutions to all exercises for STA426 here.
+This repo is for all the exercises of STA426.
 
 On a completely unrelated note, here is the cutest chair ever!
 
