@@ -58,37 +58,62 @@ BiocManager::install("BSgenome.Scerevisiae.UCSC.sacCer3", update=FALSE)
 library("BSgenome")
 library("BSgenome.Scerevisiae.UCSC.sacCer3")
 library("Rsubread")
+library(tidyr)
+library(ggplot2)
 ```
 
-## Run some things
+## Download read file
 
 ```{r }
-x <- rnorm(100) # replace this with any code that needs to run at start; otherwise, delete section
+setwd("/Users/dipayan/Documents/GitHub/sta426-exercises/week5-ex")
+download.file("http://fgcz-gstore.uzh.ch/public/Yeast_Reads/20170313.A-G1_R1-sub.fastq.gz", "G1_R1-sub.fastq.gz")
 ```
 
-## Question 1
-
-*Here, cut-and-paste the text of the question to answer*
-
-Write some text to discuss your solution.
+## Write genome on local disk as fasta file
 
 ```{r }
-mean(x)-median(x)
-hist(x,30)
+genome <- BSgenome.Scerevisiae.UCSC.sacCer3
+export(genome, "./SacCer3.fasta")
 ```
 
-Write some further text here discuss the solution, perhaps after a plot / table / some code.
-
-## Question 2
-
-*Here, again, cut-and-paste the text of the question to answer*
-
-Write some text to discuss your solution.
+## Build index
 
 ```{r }
-head(x)
+buildindex(basename="./SacCer3_reference_index", reference="./SacCer3.fasta", indexSplit=TRUE, memory=2000)
 ```
 
-Write some further text here discuss the solution, perhaps after a plot / table / some code.
+## Align reads to reference (no end trimming)
+
+```{r }
+align(index="./SacCer3_reference_index", readfile1="./G1_R1-sub.fastq.gz", output_file="./G1_R1-sub_Rsubread_alignment_trim0.BAM", nthreads=4)
+```
+
+## Align reads to reference (trimming 5 bases off both ends)
+
+```{r }
+align(index="./SacCer3_reference_index", readfile1="./G1_R1-sub.fastq.gz", output_file="./G1_R1-sub_Rsubread_alignment_trim5.BAM", nthreads=4, nTrim5=5, nTrim3=5)
+```
+
+## Compare fraction of reads aligned with and without end trimming
+
+```{r }
+trim0Stats <- read.delim("./G1_R1-sub_Rsubread_alignment_trim0.BAM.summary", header=FALSE, sep="\t")
+trim5Stats <- read.delim("./G1_R1-sub_Rsubread_alignment_trim5.BAM.summary", header=FALSE, sep="\t")
+alignStats <- data.frame(c("Trim 0 bases", "Trim 5 bases"), t(cbind(trim0Stats[,2], trim5Stats[,2])))
+colnames(alignStats) <- c("Case", trim0Stats[,1])
+alignStats <- cbind(alignStats, Unique=100*alignStats$Uniquely_mapped_reads/alignStats$Total_reads, Multi=100*alignStats$Multi_mapping_reads/alignStats$Total_reads)
+
+#| label: frac-reads
+ggplot(alignStats %>% gather(Category, Fraction, Unique:Multi), aes(x=Case, y=Fraction, fill=Category)) + 
+  geom_col() +
+  geom_text(aes(label=round(Fraction,2)), size=3, position=position_stack(vjust=0.5)) +
+  labs(x="", y="Percentage of reads aligned (%)") +
+  ylim(c(0,100)) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+
+```
+
+We see that the fraction of reads aligned increases very slightly for both unique and multi-mappers upon trimming 5 bases off both ends of the reads. This could be because some of the bases which were called wrongly at the ends of the reads (due to lower quality scores) were removed from the reads, allowing better alignment with the reference genome.
 
 ..
