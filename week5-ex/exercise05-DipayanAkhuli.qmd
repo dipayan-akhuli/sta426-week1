@@ -1,0 +1,94 @@
+---
+title: "Exercise 05"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Mapping in practice
+
+### bowtie2
+
+[Scoring alignments:]{.underline} bowtie2 performs two kinds of alignments - end-to-end (by default) and local alignment. The former aligns all the characters in the read to the reference sequence, while the latter only aligns those characters in the read to the reference which maximize the score of a given possible alignment, thereby skipping characters at the start or end of the read if they would result in base mismatch or gaps. In either case, the alignment score is calculated as follows:
+
+-   Each base mismatch at a high quality position is penalized -6.
+-   Each gap opening is penalized -5.
+-   Each gap extension (including first base in gap) is penalized -3.
+-   Additionally, for local alignments, each base in the read which matches the reference contributes a +2 bonus.
+
+Thus, the maximum possible score for end-to-end alignments is 0, while it is equal to the length of the read multiplied by the match bonus for local alignments.
+
+[Reporting options:]{.underline} bowtie2 has 3 reporting options after aligning a read with a reference sequence:
+
+1.  Default mode: Upon finding one alignment, it keeps searching for other valid alignments which are almost as good or better than the first alignment, and after reaching a search limit, reports the best alignment that it encountered (which might not be the best possible alignment globally).
+
+2.  -k mode: In this mode, it searches for a maximum of N (specified parameter) distinct, valid alignments, and then reports all the alignments it found, sorted in descending order of alignment scores. Again, as in the previous mode, it is not guaranteed that the best possible alignment will be reported if the total number of distinct, valid alignments that are possible exceeds N.
+
+3.  -a mode: In this mode, it searches for all possible distinct, valid alignments, and reports them all in descending order of alignment scores. Thus, only in this mode is it guaranteed that the best possible score will be reported.
+
+### STAR
+
+[Scoring alignments:]{.underline} STAR calculates alignment scores as follows:
+
+-   Each base match contributes a +1 score.
+-   Each base mismatch is penalized -1.
+-   Each gap opening (due to insertion/deletion) is penalized -2.
+-   Each gap extension (due to insertion/deletion, including first base in gap) is penalized -2.
+-   For RNA splice junctions, each GC/AG or CT/GC junction is penalized -4, while each AT/AC or GT/AT or non-canonical junction is penalized -8.
+-   Additionally, a penalty equal to -0.25 times log2(genomic length of alignment) is applied to each alignment.
+
+[Reporting options:]{.underline} STAR searches for M (default 50) alignments using the multimapper, and reports a maximum of N (default 10, has to be set not more than M) alignments per read. The primary alignment is the one with the best score and is reported first, followed by other alignments in random order. If the number of alignments found for a read exceeds N, the read is considered unmapped since it maps to too many locations. There are also options to report a single unique alignment using the unique mapper, or report all alignments found by the multimapper.
+
+## Load packages
+
+```{r }
+BiocManager::install("Rsubread", update=FALSE)
+BiocManager::install("BSgenome.Scerevisiae.UCSC.sacCer3", update=FALSE)
+library("BSgenome")
+library("BSgenome.Scerevisiae.UCSC.sacCer3")
+library("Rsubread")
+```
+
+## Run some things
+
+```{r }
+x <- rnorm(100) # replace this with any code that needs to run at start; otherwise, delete section
+```
+
+## Question 1
+
+*Here, cut-and-paste the text of the question to answer*
+
+Write some text to discuss your solution.
+
+```{r }
+mean(x)-median(x)
+hist(x,30)
+```
+
+Write some further text here discuss the solution, perhaps after a plot / table / some code.
+
+## Question 2
+
+*Here, again, cut-and-paste the text of the question to answer*
+
+Write some text to discuss your solution.
+
+```{r }
+head(x)
+```
+
+Write some further text here discuss the solution, perhaps after a plot / table / some code.
+
+..

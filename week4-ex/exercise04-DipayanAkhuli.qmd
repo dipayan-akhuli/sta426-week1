@@ -1,0 +1,333 @@
+---
+title: "Exercise 04"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r }
+library(limma)
+library(ggplot2)
+library(scales)
+library(matrixStats)
+library(ROCR)
+library(affy)
+library(preprocessCore)
+```
+
+## Generate simulation data
+
+Set simulation parameters.
+
+```{r }
+nGenes <- 10000                   # number of "features"
+nSamples <- 6                     # number of samples (split equal in 2 groups)
+pDiff <- .1                       # proportion of genes "differential"
+grp <- rep(0:1, each=nSamples/2)  # dummy variable for exp. group
+trueFC <- 2                       # log-fold-change of truly DE
+
+d0 <- 1
+s0 <- 0.8
+sd <- s0 * sqrt(d0/rchisq(nGenes, df=d0))  # dist'n of s.d.
+```
+
+Generate null data without any differential features.
+
+```{r }
+y <- matrix(rnorm(nGenes*nSamples, sd=sd), nr=nGenes, nc=nSamples)
+```
+
+Add differential expression to chosen indices.
+
+```{r }
+indD <- 1:floor(pDiff*nGenes)
+diffE <- sample(c(-1,1), max(indD), replace=TRUE) * trueFC
+y[indD, grp==1] <- y[indD, grp==1] + diffE
+```
+
+## Question 1
+
+*First, do an exploratory analysis of the true (simulated) and observed (calculated from data) variances. For the observed variances, compute the residual variance for each row of `y` (i.e., pooled variance of the two groups of simulated samples, not the row-wise variance; see the denominator of the classical two-sample t-statistic) and look at the distribution of them, of the true variances (from the simulated `sd`) and make a scatter plot of true versus observed. Often, viewing variances on the log scale is preferred.*
+
+Observed variances were calculated based on the classical two-sample t-statistic, where $s^2_p = \dfrac{\sum (x_1 - \bar{x_1})^2 + \sum (x_2 - \bar{x_2})^2}{n_1 + n_2 - 2}$ is the pooled variance of the two sample groups.
+
+```{r }
+# calculate true and observed variances
+cols <- c(rep("Differential", length(indD)), rep("Non-differential", nGenes-length(indD)))
+dfVars <- data.frame(varTrue=sd^2, varObs=(rowSums((y[,grp==0] - rowMeans(y[,grp==0]))^2) + rowSums((y[,grp==1] - rowMeans(y[,grp==1]))^2)) / (nSamples-2), Status=cols)
+```
+
+```{r }
+#| label: scatter-var
+ggplot(dfVars, aes(x=varTrue, y=varObs, color=Status)) + 
+  geom_point(shape=21, alpha=0.3) +
+  labs(x="True variance", y="Observed variance") +
+  scale_x_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(min(dfVars$varObs, dfVars$varTrue), max(dfVars$varObs, dfVars$varTrue))) +
+  scale_y_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(min(dfVars$varObs, dfVars$varTrue), max(dfVars$varObs, dfVars$varTrue))) +
+  geom_abline(slope=1, intercept=0, color="black", linewidth=0.3) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square")) +
+  coord_equal()
+```
+
+We see that the observed variances are quite close to the true variances (fitting the $y=x$ line well). Additionally, there is no distinguishable difference between differential and non-differential genes.
+
+## Question 2
+
+*Produce a visualization that demonstrates that you understand the “differential expression” that we introduced into the simulation. There are many possibilities; use your creativity.*
+
+We know that uniformly random differential expression (DE) values, either -2 or +2, have been added in the experimental group to the genes at the chosen indices `indD`. Thus, the average difference in log-expression between the experimental and control group for these differential genes should be around -2 or +2. The difference should be negative or positive almost equally frequently since they are sampled from a uniform distribution. In contrast, for non-differential genes, the above difference should be around 0 since the simulated values for each gene are sampled from the same normal distribution. Thus, we should observe a clear difference between differential and non-differential genes when a histogram/density of differences in log-expression values (i.e., log-fold-change) between experimental and control groups is plotted.
+
+```{r }
+# calculate mean differences between experimental and control groups
+dfVisDE <- data.frame(diff=rowMeans(y[,grp==1]) - rowMeans(y[,grp==0]), Status=cols)
+```
+
+```{r }
+#| label: diff-DE
+ggplot(dfVisDE, aes(x=diff, color=Status)) + 
+  geom_density() +
+  labs(x="log-fold-change b/w exp. and ctrl. groups", y="Density") +
+  xlim(c(-10,10)) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+As expected, the distribution of difference between experimental and control group log-expression values is clearly distinctive for differential and non-differential genes. For differential genes, the distribution is bimodal with peaks centered at -2 and +2, while for non-differential genes, the distribution has a sharp peak centered at 0. Thus, the above plot makes the differential expression clear.
+
+Next, we create a design matrix to represent the linear model to be fitted (to each row of the table).
+
+```{r }
+(designSim <- model.matrix(~grp))
+```
+
+## Question 3
+
+*In practical terms, what is the interpretation of the two columns of the design matrix with the parameterization shown above?*
+
+Let $y_1, y_2, y_3$ represent the linear model predictions of log-expression of a gene for the 3 samples in the control group, and similarly $y_4, y_5, y_6$ for those in the experimental group. Using the above design matrix, we have,
+$$
+\begin{bmatrix}
+y1 \\
+y2 \\
+y3 \\
+y4 \\
+y5 \\
+y6 \\
+\end{bmatrix}
+=
+\begin{bmatrix}
+1 & 0 \\
+1 & 0 \\
+1 & 0 \\
+1 & 1 \\
+1 & 1 \\
+1 & 1 \\
+\end{bmatrix}
+\begin{bmatrix}
+\beta_1 \\
+\beta_2 \\
+\end{bmatrix}
+$$
+where $\beta_1, \beta_2$ are the coefficients (intercept and slope, respectively) of the linear model. $\beta_1$ represents the expectation of the control group log-expression, and $\beta_2$ represents the expectation of differences in log-expression, i.e., expectation of the log-fold-change of expression in the experimental group as compared to the control group. Thus, the first column of the design matrix (all 1's) corresponds to the intercept being included in each of the 6 predictions (control log-expression), while the second column corresponds to the slope being included only in the last 3 predictions (log-fold-change of the experimental group), and not in the first 3 predictions which make up the control group.  
+
+We fit the linear model to each feature (row) of the table `y`, and the variance parameters are moderated. The moderated t-statistics are then calculated and plotted (colored by the true differential status).
+
+```{r }
+fitSim <- lmFit(y, designSim)
+fitSim <- eBayes(fitSim)
+
+dfModt <- data.frame(feature=1:length(cols), t=fitSim$t[,2], Status=cols)
+```
+
+```{r }
+#| label: mod-t
+ggplot(dfModt, aes(x=feature, y=t, color=Status)) + 
+  geom_point(shape=21, alpha=0.3) + 
+  ylim(-10,10) +
+  labs(x="Features", y="Moderated t-statistic") +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+We see that the moderated t-statistic does a reasonable job of separating the truly differential features from those that do not change, but it is not perfect.
+
+## Question 4
+
+*For each row (each feature in the experiment) of `y`, calculate the classical 2-sample t-test. See `?t.test` for more details about the built-in R function to do this calculation and convince yourself which arguments to use to match the classical t-test described in the lecture. Add a visualization similar to the above plot for the classical t-statistic and the log-fold-change (mean difference of the 2 groups). By eye, which statistic best separates the truly differential from non-differential?*
+
+The classical unpaired 2-sample t-test is performed between the experimental and control groups for each gene, since it is known that their distributions have the same variance. Thus, the `var.equal` argument of `t.test()` is set to `TRUE`. 
+
+The log-fold-change, i.e., the mean difference between the two groups, was obtained from `fitSim$coefficients`. These values were calculated earlier as well and stored in `dfVisDE`, and the values are equal to those fit by the linear model.
+
+```{r }
+tstat <- rep(0, nGenes)
+for (i in 1:nGenes) {
+  tstat[i] <- t.test(y[i,grp==0], y[i,grp==1], var.equal = TRUE)$statistic
+}
+
+dfStat <- data.frame(feature=1:length(cols), t=tstat, diff=fitSim$coefficients[,2], Status=cols)
+```
+
+```{r }
+#| label: tstat-diff
+#| layout-ncol: 2
+#| column: page
+ggplot(dfStat, aes(x=feature, y=t, color=Status)) + 
+  geom_point(shape=21, alpha=0.3) + 
+  ylim(-10,10) +
+  labs(x="Features", y="Classical t-statistic") +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+
+ggplot(dfStat, aes(x=feature, y=diff, color=Status)) + 
+  geom_point(shape=21, alpha=0.3) + 
+  ylim(-10,10) +
+  labs(x="Features", y="log-fold-change") +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+It seems that the log-fold-change statistic has more clearly different distributions for the two sets of genes as compared to the classical t-statistic, because its distribution is bimodal (at -2 and +2) for the differential genes while it is relatively sharply unimodal (at 0) for non-differential genes. However, the spread of log-fold-change values is quite similar between the two sets of genes, thus the separation is poorer than for the classical t-statistic, which has a much wider spread for the differential genes as compared to the non-differential ones. Thus, by eye, the classical t-statistic separates the two sets of genes better than the log-fold-change.
+
+## Question 5
+
+*Pick a reasonable metric to compare the methods, such as an ROC curve, false discovery plot, power versus achieved FDR. Using this metric / curve, formally compare the performance of the classical t-test (calculated in Question 4), the moderated t-test (plotted above) and the log-fold-change or mean difference (`fit$coefficients`). Two packages that are useful for these kind of plots include: ROCR or iCOBRA.*
+
+In order to compare the three methods, we choose the ROC (receiver operating characteristic) curve, which plots the true positive rate versus the false positive rate for different cutoffs. Since all ROC curves go from $(0,0)$ to $(1,1)$, it is desirable to have a higher true positive rate and lower false positive rate, i.e., a curve towards the top left quadrant, away from the $y=x$ line.
+
+```{r }
+labels <- c(abs(diffE), rep(0, nGenes-length(indD)))
+# predictions are made in terms of absolute values because the ROCR package can only handle binary classification, here, between 0 (non-differential) and 2 (differential)
+predCt <- prediction(abs(dfStat$t), labels)
+predModt <- prediction(abs(dfModt$t), labels)
+predDiff <- prediction(abs(dfStat$diff), labels)
+
+perfCt <- performance(predCt, measure="tpr", x.measure="fpr")
+perfModt <- performance(predModt, measure="tpr", x.measure="fpr")
+perfDiff <- performance(predDiff, measure="tpr", x.measure="fpr")
+
+dfPerf <- data.frame(Statistic=as.factor(rep(c("t-statistic (classical)","t-statistic (moderated)","log-fold-change"), each=length(perfCt@x.values[[1]]))), FP=c(perfCt@x.values[[1]],perfModt@x.values[[1]],perfDiff@x.values[[1]]), TP=c(perfCt@y.values[[1]],perfModt@y.values[[1]],perfDiff@y.values[[1]]))
+```
+
+```{r }
+#| label: perf
+ggplot(dfPerf, aes(x=FP, y=TP, color=Statistic)) + 
+  geom_line() + 
+  labs(x="False positive rate", y="True positive rate") +
+  geom_abline(slope=1, intercept=0, color="black", lty=2, linewidth=0.3) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+We see that the two kinds of t-statistics perform much better than the log-fold-change statistic in general, with the moderated t-statistic performing very slightly better than the classical one. This is because they achieve a considerably high true positive rate for very low false positive rates, which is desirable for classification of genes into the two sets, differential or non-differential. However, none of these statistics seem to do a very good job, because they are not quite near the top left corner, hence, a respectably high true positive rate is only achieved when the false positive rate is also prohibitively high.
+
+Next, we run a standard limma differential expression (DE) analysis on a real microarray dataset. In particular, we explore the combination of design matrices and contrast matrices to answer DE questions-of-interest.
+
+```{r }
+unzip("affy_estrogen.zip")
+ddir <- "affy_estrogen"
+
+# preprocess affymetrix data
+targets <- readTargets("targets.txt", path=ddir)
+targets$time.h <- factor(targets$time.h)
+targets
+```
+
+```{r }
+abatch <- ReadAffy(filenames=targets$filename, celfile.path=ddir)
+eset <- rma(abatch)  # bg correct, normalize, summarize
+```
+
+We then look at overall summaries of a large dataset, such as a multidimensional scaling (MDS) plot to get an idea of the relations between samples. In this case, distances on the plot approximate the typical log2 fold-changes.
+
+```{r }
+mds <- plotMDS(exprs(eset), plot=FALSE)  # MDS plot
+dfMDS <- data.frame(MDS1=mds$x, MDS2=mds$y, treatment=targets$estrogen, time.h=targets$time.h)
+```
+
+```{r }
+#| label: mds
+ggplot(dfMDS, aes(x=MDS1, y=MDS2, shape=treatment, color=time.h)) +
+  geom_point(size = 3) +
+  xlim(c(-1.2,1.2)) +
+  ylim(c(-1.2,1.2)) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+In order to run the standard limma pipeline for differential expression, we need a design matrix and optionally, a contrast matrix. In the code below, the metadata is encoded into a factor variable that is used for creating the design matrix.
+
+```{r }
+# do the limma modeling
+f <- paste0(targets$estrogen, targets$time.h)
+f <- factor(f)
+
+# create design matrix
+designAffy <- model.matrix(~0+f)
+colnames(designAffy) <- levels(f)
+designAffy
+```
+
+At this stage, it may make sense to filter out control probe sets or remove lowly expressed genes, but for simplicity, we go straight to the model fitting. From the design matrix, we now fit the linear model (for each gene).
+
+```{r }
+fitAffy <- lmFit(eset, designAffy)
+```
+
+To make inferences about parameters defined in the design matrix, we now define a contrast matrix, which can be constructed by hand or by using the `makeContrasts()` function.
+
+```{r }
+cont.matrix <- makeContrasts(E10="present10-absent10", E48="present48-absent48", Time="absent48-absent10", levels=designAffy)
+cont.matrix
+```
+
+Now, the contrasts are fit and the moderation of the variance parameters is performed.
+
+```{r }
+fitAffy2  <- contrasts.fit(fitAffy, cont.matrix)
+fitAffy2  <- eBayes(fitAffy2)
+```
+
+Next, we summarize the differential expression statistics, such as via moderated-t (or F) statistics and (adjusted) P-values.
+
+```{r }
+statsAffy10h <- topTable(fitAffy2, coef=1, n=nrow(exprs(eset)))
+statsAffy48h <- topTable(fitAffy2, coef=2, n=nrow(exprs(eset)))
+```
+
+## Question 6
+
+*From the matrix of summarized Affymetrix data that went into the limma pipeline in the first place (`exprs(eset)`), manually calculate the `logFC` and `AveExpr` for one of the top differentially expressed features.*
+
+We calculate the `logFC` for samples with estrogen present versus estrogen absent, after 10 hrs and after 48 hours. We also calculate the `AveExpr` of each gene across all 8 samples (2 replicates each of 2 conditions and 2 timepoints). These statistics are calculated for all genes, and the results are shown for one of the top differentially expressed genes, which has the highest t-statistic after 48 hrs and the 2nd highest t-statistic after 10 hrs, from the contrast fitting results. The results from the manual calculations turn out to be identical to those obtained from the linear model, and this gene turns out to have the highest logFC both after 10 hrs and 48 hrs.
+
+```{r }
+dfAffy <- data.frame(matrix(0, nr=nrow(exprs(eset)), nc=3))
+dfAffy[,1] <- rowMeans(exprs(eset)[,as.numeric(designAffy[,3])==1]) - rowMeans(exprs(eset)[,as.numeric(designAffy[,1])==1])
+dfAffy[,2] <- rowMeans(exprs(eset)[,as.numeric(designAffy[,4])==1]) - rowMeans(exprs(eset)[,as.numeric(designAffy[,2])==1])
+dfAffy[,3] <- rowMeans(exprs(eset))
+rownames(dfAffy) <- rownames(exprs(eset))
+colnames(dfAffy) = c("logFC-10h", "logFC-48h", "AveExpr")
+
+print("Results from linear model:")
+statsAffy10h[which.max(statsAffy10h$logFC),]
+statsAffy48h[which.max(statsAffy48h$logFC),]
+print("Result from manual calculation:")
+dfAffy[which.max(dfAffy$`logFC-10h`),]
+```
+
+..
