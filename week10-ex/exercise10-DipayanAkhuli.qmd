@@ -1,0 +1,371 @@
+---
+title: "Exercise 10"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+startTime=proc.time()
+```
+
+The single cell dataset consists of peripheral blood mononuclear cells. These cells are comprised of different cell types. For each cell the ground truth is provided in terms of the assigned cell type that was derived using additional data. A cell has "unassigned" as cell type if it could not be reliably assigned to a cell type.
+
+## Load packages
+
+```{r load packages, warning=FALSE}
+suppressPackageStartupMessages(library(scuttle))
+suppressPackageStartupMessages(library(scran))
+suppressPackageStartupMessages(library(scater))
+suppressPackageStartupMessages(library(BiocParallel))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(HDF5Array))
+suppressPackageStartupMessages(library(hdf5r))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(irlba))
+suppressPackageStartupMessages(library(bluster))
+```
+
+## Question 1
+
+We first load the data. We then carry out the entire analysis without subsampling.
+
+```{r load data}
+(sce <- readRDS("pbmc-sce.RDS"))
+```
+
+Cell type abundances for the entire dataset are plotted below.
+
+```{r bar plot cell types}
+#| label: cell-types
+#| fig-cap: "Figure 1: Abundances of cell types"
+#| fig-width: 8
+#| fig-height: 4
+cd <- as.data.frame(colData(sce))
+ggplot(cd, aes(x=cellType, fill=cellType)) + 
+  geom_bar(show.legend=FALSE) +
+  labs(x="Cell type", y="Abundance") +
+  ylim(0,3000) +
+  theme_bw() + theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+```
+
+We see that the distribution of abundance of various cell types is very unequal, with some quite frequent and some very rare.
+
+```{r total unassigned}
+paste("Number of unassigned cells in dataset =", sum(sce@colData@listData[["cellType"]]=="unassigned"))
+```
+
+There are 734 cells in the original dataset for which the cell type is "unassigned".
+
+## Question 2
+
+### Quality control
+
+As a first step of QC, we first calculate the library sizes and number of detected genes per cell. We then identify the reads mapping to the mitochondrial genome and calculate proportions of mitochondrial reads per cell. We also estimate the proportion of reads mapping to the top 100 most highly expressed genes per cell.
+
+```{r quality scores}
+isMito <- grepl("^mt-", rowData(sce)$Symbol, ignore.case=TRUE)
+sce <- addPerCellQC(sce, subsets=list(Mito=isMito), percent.top=100, detection_limit=0, BPPARAM=MulticoreParam(workers=8))
+```
+
+We then visualize these QC metrics as violin plots for the entire dataset.
+
+```{r violin plot qc metrics}
+#| label: viol-qc-metrics
+#| fig-cap: "Figure 2: Violin plots of QC metrics"
+#| fig-width: 10
+#| fig-height: 5
+gridExtra::grid.arrange(
+  plotColData(sce, y="detected", colour_by="Sample", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of detected genes") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="sum", colour_by="Sample", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of assigned reads") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="subsets_Mito_percent", colour_by="Sample", add_legend=FALSE) + ggtitle("% mitochondrial reads") + theme(axis.title.y=element_blank()),
+  plotColData(sce, y="percent.top_100", colour_by="Sample", add_legend=FALSE) + ggtitle("% reads from top 100 genes") + theme(axis.title.y=element_blank()),
+  ncol=4)
+```
+
+We see that the first two metrics have a pronounced lower tail while the next two have a pronounced upper tail. These are expected to mostly comprise of the low quality cells, as explained below:
+
+1.  Low library size - indicates loss of RNA due to cell lysis or improper cDNA amplification.
+
+2.  Low number of detected genes - indicates failure to capture range of transcripts expected from every cell.
+
+3.  High proportion of mitochondrial reads - indicates leakage of cytoplasmic transcripts out of the cell, seen in the form of enrichment of mitochondrial transcripts.
+
+4.  High proportion of reads corresponding to top 100 genes - indicates failure to capture relatively weakly expressed transcripts.
+
+We thus want to filter these low quality cells from our dataset. In order to do this, we follow two approaches - (1) identifying outliers in higher dimensional space based on difference of the QC metrics from their median values using `isOutlier()`, (2) manually setting fixed thresholds on the QC metrics.
+
+**Filtering approach 1: Identifying outliers using `isOutlier()`**
+
+```{r find qc outliers 1}
+qc.lib <- isOutlier(sce$sum, log=TRUE, type="lower")
+qc.nexprs <- isOutlier(sce$detected, log=TRUE, type="lower")
+qc.mito <- isOutlier(sce$subsets_Mito_percent, type="higher")
+qc.top <- isOutlier(sce$percent.top_100, type="higher")
+
+discard <- qc.lib | qc.nexprs | qc.mito | qc.top
+sce$discard <- discard
+
+DataFrame(LibSize=sum(qc.lib), NExprs=sum(qc.nexprs), MitoProp=sum(qc.mito), TopProp=sum(qc.top), Total=sum(discard))
+```
+
+```{r violin plot qc outliers 1}
+#| label: viol-qc-outliers1
+#| fig-cap: "Figure 3: Violin plots of QC metrics showing discarded cells using approach 1"
+#| fig-width: 10
+#| fig-height: 5
+gridExtra::grid.arrange(
+  plotColData(sce, y="detected", colour_by="discard", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of detected genes") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="sum", colour_by="discard", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of assigned reads") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="subsets_Mito_percent", colour_by="discard", add_legend=FALSE) + ggtitle("% mitochondrial reads") + theme(axis.title.y=element_blank()),
+  plotColData(sce, y="percent.top_100", colour_by="discard") + ggtitle("% reads from top 100 genes") + theme(axis.title.y=element_blank()),
+  ncol=4)
+```
+
+We see that this automated method is quite successful in identifying low quality cells without misidentifying too many cells from the actually relevant regions of the distributions. Thus, we discard these cells from the original dataset. In addition, we remove the genes which are expressed in less than 5 cells throughout the dataset.
+
+```{r discard qc outliers 1}
+sceFilt <- sce[, !sce$discard]
+minCellsExpressed <- 5
+isExpressed <- Matrix::rowSums(counts(sceFilt)>=1) >= minCellsExpressed
+sceFilt <- sceFilt[isExpressed, ]
+paste("Number of unassigned cells remaining after automatically filtering outliers =", sum(sceFilt@colData@listData[["cellType"]]=="unassigned"))
+```
+
+Thus, after filtering low quality cells using the automated outlier identification procedure, we have been able to remove 383 "unassigned" cells but we are still left with 351 such remaining cells. The associated sensitivity and specificity of this low quality cell filtering procedure is calculated below:
+
+```{r sens-spec qc outliers 1}
+paste("Sensitivity =", round(mean(sce$discard[sce$cellType=="unassigned"]), 3))
+paste("Specificity =", round(mean(!sce$discard[sce$cellType!="unassigned"]), 3))
+```
+
+We see that even though the specificity is appreciably high, the sensitivity is quite low, and this is because we fail to filter a large number of low quality cells.
+
+Thus, we now try to use manual thresholds in hopes of improving the performance. The thresholds were chosen roughly according to the initial distributions of the QC metrics, and then tuned in various combinations in order to improve performance. The thresholds which have been set below represent such a tuned set of thresholds.
+
+**Filtering approach 2: Setting manual fixed thresholds**
+
+```{r find qc outliers 2}
+qc.lib <- sce$sum < 4000
+qc.nexprs <- sce$detected < 1300
+qc.mito <- sce$subsets_Mito_percent > 12
+qc.top <- sce$percent.top_100 > 65
+
+discard2 <- qc.lib | qc.nexprs | qc.mito | qc.top
+sce$discard2 <- discard2
+
+DataFrame(LibSize=sum(qc.lib), NExprs=sum(qc.nexprs), MitoProp=sum(qc.mito), TopProp=sum(qc.top), Total=sum(discard2))
+```
+
+```{r violin plot qc outliers 2}
+#| label: viol-qc-outliers2
+#| fig-cap: "Figure 4: Violin plots of QC metrics showing discarded cells using approach 2"
+#| fig-width: 10
+#| fig-height: 5
+gridExtra::grid.arrange(
+  plotColData(sce, y="detected", colour_by="discard2", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of detected genes") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="sum", colour_by="discard2", add_legend=FALSE) + scale_y_log10() + ggtitle("Number of assigned reads") + theme(axis.title.y=element_blank()), 
+  plotColData(sce, y="subsets_Mito_percent", colour_by="discard2", add_legend=FALSE) + ggtitle("% mitochondrial reads") + theme(axis.title.y=element_blank()),
+  plotColData(sce, y="percent.top_100", colour_by="discard2") + ggtitle("% reads from top 100 genes") + theme(axis.title.y=element_blank()),
+  ncol=4)
+```
+
+We see that manual thresholding appears to identify more low quality cells as compared to the automated method above. However, a significantly higher number of cells from the middle of the distributions are also potentially misidentified as low quality cells. We now discard these cells from the original dataset to compare results with the previous method.
+
+```{r  discard qc outliers 2}
+sceFilt2 <- sce[, !sce$discard2]
+isExpressed <- Matrix::rowSums(counts(sceFilt2)>=1) >= minCellsExpressed
+sceFilt2 <- sceFilt2[isExpressed, ]
+paste("Number of unassigned cells remaining after filtering using manual thresholds =", sum(sceFilt2@colData@listData[["cellType"]]=="unassigned"))
+```
+
+We have now been able to remove 426 "unassigned" cells but we are still left with 308 such remaining cells, which is not a huge improvement over the automated method.
+
+```{r sens-spec qc outliers 2}
+paste("Sensitivity =", round(mean(sce$discard2[sce$cellType=="unassigned"]), 3))
+paste("Specificity =", round(mean(!sce$discard2[sce$cellType!="unassigned"]), 3))
+```
+
+We see that the sensitivity of the manual method is a bit higher than the automated method, however, the consequent loss in specificity is quite large, because we end up wrongly filtering a lot of cells which indeed have assigned cell types.
+
+Since the automated method filters over half of the unassigned cells, we continue with these results since it achieves a high specificity at least, and thus, we are left with more meaningful data in our dataset for further downstream analysis.
+
+## Question 3
+
+### Normalization
+
+After filtering low quality cells from our dataset, we now normalize our data to carry out actual analysis. We first perform normalization using the library sizes, and also using pool-based size factors deconvolved into cell-based size factors, in order to determine if there are any composition biases in our raw counts between cells (shown in the scatter plot below).
+
+```{r normalize}
+set.seed(1)
+normLibSF <- librarySizeFactors(sceFilt)
+normClust <- quickCluster(sceFilt, BPPARAM=MulticoreParam(workers=8))
+sceFilt <- computeSumFactors(sceFilt, cluster=normClust, min.mean=0.1, BPPARAM=MulticoreParam(workers=8))
+```
+
+```{r scatter plot size factors}
+#| label: size-factors
+#| fig-cap: "Figure 5: Scatter plot of size factors"
+#| fig-width: 8
+#| fig-height: 5
+dfSF <- data.frame(normLibSF=normLibSF, normDeconvSF=sceFilt@colData@listData[["sizeFactor"]], cellType=factor(sceFilt@colData@listData[["cellType"]]))
+ggplot(dfSF, aes(x=normLibSF, y=normDeconvSF, color=cellType)) +
+  geom_point(show.legend=TRUE) +
+  geom_abline(slope=1, intercept=0, color="red", lty=1, linewidth=0.3) +
+  labs(x="Library size factor", y="Deconvolution size factor") +
+  scale_x_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(10^-1, 10^1)) +
+  scale_y_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(10^-1, 10^1)) +
+  theme_bw()
+```
+
+We see that the deconvolution size factors are indeed dependent on the cell type, since they are systematically lower (or higher) than the library size factors for certain cell types. This implies that our dataset contains compositional biases due to strong differential expression between cell types. Thus, the deconvolution size factors provide a better choice for normalization than the library size factors as they take these compositional biases into consideration.
+
+We now log-transform our counts normalized by the deconvolution size factors (already performed on `sceFilt`).
+
+```{r log-transform}
+sceFilt <- logNormCounts(sceFilt)
+```
+
+### Dimensionality reduction using PCA
+
+We then perform dimensionality reduction using PCA on the top 2000 genes with the largest variance, and show a PCA plot of the first two principal components.
+
+```{r dim red}
+#| label: dim-red
+#| fig-cap: "Figure 6: PCA plot of the filtered dataset"
+#| fig-width: 8
+#| fig-height: 5
+set.seed(1)
+dec <- modelGeneVarByPoisson(sceFilt, BPPARAM=MulticoreParam(workers=8))
+topGenes <- getTopHVGs(dec, n=2000)
+sceFilt <- runPCA(sceFilt, subset_row=topGenes, BPPARAM=SerialParam()) 
+sceFilt <- runUMAP(sceFilt, dimred="PCA", BPPARAM=MulticoreParam(workers=8))
+plotReducedDim(sceFilt, dimred="PCA", colour_by="cellType", text_by="cellType", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+```
+
+We see that some broad cell types are grouped together and separated from other groups along the first two PCs (T cells and NK cells in the top left, B cells in the bottom, and monocytes, platelets, and erythrocytes in the right), but the groups are quite diffuse, i.e., different cells belonging to the same cell type seem to be quite separated as well. Nevertheless, the PCs identified by PCA are useful as input in the next steps of the analysis pipeline like clustering, significantly reducing the computational cost.
+
+### Clustering
+
+We now assign single cells to clusters in order to group them such that different cell types are in separate clusters, i.e., we want our clusters to resemble the ground truth cell types. For this purpose, we try two different clustering methods and also use them in conjunction, and then evaluate the agreement of the clusters produced by each method with the assigned cell types in order to compare the methods. Different random number seeds were used with the stochastic methods and the parameters for each clustering method were chosen to maximize clustering performance.
+
+**Clustering method 1: k-means clustering**
+
+```{r kmeans}
+set.seed(13)
+clust.kmeans <- clusterCells(sceFilt, use.dimred="PCA", BLUSPARAM=KmeansParam(centers=9))
+table(clust.kmeans)
+sceFilt@colData@listData[["label1"]] <- clust.kmeans
+paste("Agreement of clustering method 1 with cell type =", round(mclust::adjustedRandIndex(sceFilt$label1,sceFilt$cellType),3))
+```
+
+We try the k-means clustering algorithm again with the number of centers to equal the number of ground truth cell types.
+
+```{r kmeans2}
+set.seed(15)
+clust.kmeans2 <- clusterCells(sceFilt, use.dimred="PCA", BLUSPARAM=KmeansParam(centers=30))
+table(clust.kmeans2)
+sceFilt@colData@listData[["label1var2"]] <- clust.kmeans2
+paste("Agreement of clustering method 1 (variant 2) with cell type =", round(mclust::adjustedRandIndex(sceFilt$label1var2,sceFilt$cellType),3))
+```
+
+**Clustering method 2: Nearest neighbor graphs**
+
+```{r nn}
+clust.nn <- clusterCells(sceFilt, use.dimred="PCA", BLUSPARAM=NNGraphParam(k=7, type="number", cluster.fun="walktrap"))
+table(clust.nn)
+sceFilt@colData@listData[["label2"]] <- clust.nn
+paste("Agreement of clustering method 2 with cell type =", round(mclust::adjustedRandIndex(sceFilt$label2,sceFilt$cellType),3))
+```
+
+**Clustering method 3: Two-step approach with k-means clustering followed by nearest neighbor graphs**
+
+```{r twostep}
+set.seed(19)
+clust.twostep <- clusterCells(sceFilt, use.dimred="PCA", BLUSPARAM=TwoStepParam(first=KmeansParam(centers=1000), second=NNGraphParam(k=5, type="rank", cluster.fun="walktrap")))
+table(clust.twostep)
+sceFilt@colData@listData[["label3"]] <- clust.twostep
+paste("Agreement of clustering method 3 with cell type =", round(mclust::adjustedRandIndex(sceFilt$label3,sceFilt$cellType),3))
+```
+
+Now that we have obtained our clusters from the three above methods, we visualize the clusters in a UMAP representation and compare them against the cell types in order to evaluate which method best separates different cell types into separate clusters.
+
+```{r plot umap-celltypes}
+#| label: umap-celltypes
+#| fig-cap: "Figure 7: UMAP representation of cell types"
+#| fig-width: 8
+#| fig-height: 5
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType", text_by="cellType", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+```
+
+```{r plot umap-clusters}
+#| label: umap-clusters
+#| fig-cap: "Figure 8: UMAP representations of clusters obtained from the three methods"
+#| fig-subcap:
+#|     - "(a) Method 1: k-means clustering with 9 centers"
+#|     - "(b) Method 1: k-means clustering with 30 centers"
+#|     - "(c) Method 2: Nearest neighbor graphs"
+#|     - "(d) Method 3: Two-step method using methods 1 and 2"
+#| layout-ncol: 2
+#| layout-nrow: 2
+#| fig-width: 5
+#| fig-height: 4.2
+plotReducedDim(sceFilt, "UMAP", colour_by="label1", text_by="label1", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+plotReducedDim(sceFilt, "UMAP", colour_by="label1var2", text_by="label1var2", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+plotReducedDim(sceFilt, "UMAP", colour_by="label2", text_by="label2", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+plotReducedDim(sceFilt, "UMAP", colour_by="label3", text_by="label3", text_size=3) + theme(panel.grid.major=element_blank(), panel.grid.minor=element_blank())
+```
+
+Since k-means clustering requires us to specify the number of target clusters, we see that for methods 1 and 3, the agreement of clusters with the cell types is appreciably high only when we set the number of clusters to be quite low as compared to the number of cell types. However, this results in many of the less populated cell types to be clustered together incorrectly (in **(a)** and **(d)**). In contrast, when we set the number of centers to be equal to the number of cell types, the agreement is very low, because many of the larger populations are further divided incorrectly (in **(b)**). On the other hand, when we use the nearest neighbor graph algorithm, the number of clusters obtained is quite close to the number of actual cell types, and the agreement value is also quite high. The clusters also look quite in line with the cell types for both small and large populations (in **(c)**). Thus, method 2 seems to perform the best overall in assigning cells having different cell types to separate clusters.
+
+## Question 4
+
+We have already calculated the agreement of the three clustering methods with the assigned cell types:
+
+(a) Method 1 (k-means clustering with k = 9): agreement = 0.693
+(b) Method 1 (k-means clustering with k = 30): agreement = 0.273
+(c) Method 2 (nearest neighbor graphs): agreement = 0.697
+(d) Method 3 (two-step approach): agreement = 0.754
+
+```{r cluster agreement}
+tab1 <- table(sceFilt$label1, sceFilt$cellType)
+tab1var2 <- table(sceFilt$label1var2, sceFilt$cellType)
+tab2 <- table(sceFilt$label2, sceFilt$cellType)
+tab3 <- table(sceFilt$label3, sceFilt$cellType)
+```
+
+```{r heatmaps}
+#| label: heatmaps
+#| fig-cap: "Figure 9: Heatmaps of cluster assignments by the three methods versus cell types"
+#| fig-subcap:
+#|     - "(a) Method 1: k-means clustering with 9 centers"
+#|     - "(b) Method 1: k-means clustering with 30 centers"
+#|     - "(c) Method 2: Nearest neighbor graphs"
+#|     - "(d) Method 3: Two-step method using methods 1 and 2"
+#| layout-ncol: 2
+#| layout-nrow: 2
+#| fig-width: 5
+(phm1 <- pheatmap(log10(tab1+10), color=viridis::viridis(100), border_color=NA, fontsize=7))
+(phm1var2 <- pheatmap(log10(tab1var2+10), color=viridis::viridis(100), border_color=NA, fontsize=7))
+(phm2 <- pheatmap(log10(tab2+10), color=viridis::viridis(100), border_color=NA, fontsize=7))
+(phm3 <- pheatmap(log10(tab3+10), color=viridis::viridis(100), border_color=NA, fontsize=7))
+```
+
+Similar to the observations from Figure 8, we see that many clusters in **(a)** and **(d)** include cells from multiple cell types (seen as multiple "hotspots" in a row), with a few highly populated cell types being included in 2 or 3 clusters (seen as multiple "hotspots" in a column). Thus, even if the agreement values for methods 1 and 3 are high, they are not quite successful in assigning separate clusters to cells belonging to different cell types. For **(b)**, we see that quite a few clusters still include cells from multiple cell types, however, the major problem now is the fact that the highly populated cell types are shared between many clusters (many "hotspots" for CD14 Mono and CD4 TCM, for example), and as a result, the agreement value is also very low. In contrast, for **(c)**, we see that both of the above problems are mitigated to a certain extent and a respectable compromise is achieved. Each cell type is mostly represented in only 1 or 2 clusters, and each cluster also mostly contains only 1, 2 or 3 cell types. Thus, even if the agreement value of method 2 is not the highest, it again seems to perform the best overall as seen in the above heatmaps.
+
+------------------------------------------------------------------------
+
+Runtime in seconds:
+
+```{r elapsed}
+paste(signif((proc.time() - startTime)["elapsed"], digits=4), "s")
+```

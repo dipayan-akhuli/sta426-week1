@@ -1,0 +1,302 @@
+---
+title: "Exercise 07"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r, output=FALSE}
+library(limma)
+library(ggplot2)
+library(scales)
+library(affy)
+library(preprocessCore)
+library(UpSetR)
+library(edgeR)
+```
+
+## Question 1
+
+*Using the estrogen dataset from Exercise 4, create an UpSet plot summarizing the numbers of differentially expressed genes for the 3 contrasts: 'E10', 'E48' and 'Time'.*
+
+We perform the same differential expression (DE) analysis using limma as in Exercise 4. We first preprocess the Affymetrix data and then create a design matrix corresponding to the 4 conditions (combinations of estrogen present/absent and time of 10h/48h) without considering the intercepts for estimating the coefficients. Thus, the corresponding contrasts will be based on the differences in values between different conditions (e.g., for differences between estrogen absent and present after 10h, we assign a +1 value in the contrast matrix for the `present10` column and a -1 value for the `absent10` column). Finally, we fit the limma model to the data and perform moderated t-tests for all genes.
+
+```{r }
+ddir <- "affy_estrogen"
+
+# preprocess affymetrix data
+targets <- readTargets("targets.txt", path=ddir)
+targets$time.h <- factor(targets$time.h)
+abatch <- ReadAffy(filenames=targets$filename, celfile.path=ddir)
+eset <- rma(abatch)  # bg correct, normalize, summarize
+f <- paste0(targets$estrogen, targets$time.h)
+f <- factor(f)
+
+# create design matrix
+designAffy <- model.matrix(~0+f)
+colnames(designAffy) <- levels(f)
+designAffy
+
+# create contrast matrix
+cont.matrix <- makeContrasts(E10="present10-absent10", E48="present48-absent48", Time="absent48-absent10", levels=designAffy)
+cont.matrix
+
+# fit the limma model and perform moderated t-tests
+fitAffy <- lmFit(eset, designAffy)
+fitAffy  <- contrasts.fit(fitAffy, cont.matrix)
+fitAffy  <- eBayes(fitAffy)
+```
+
+We then summarize the t-test results as differential or non-differential expression per gene per contrast (using a p-value cutoff of 0.05) and plot the results as an UpSet plot. From the plot, we obtain the number of differentially expressed genes for each combination of contrasts or on their own.
+
+```{r }
+# summarize t-test results for all 3 contrasts
+summaryAffy <- decideTests(fitAffy, method="separate", adjust.method="BH", p.value=0.05, lfc=0)
+
+# check which genes are differentially expressed and list them for each of the 3 contrasts
+summaryDiffs <- which(summaryAffy!=0, arr.ind=TRUE)
+summaryDiffs <- list(E10=summaryDiffs[which(summaryDiffs[,2]==1)], E48=summaryDiffs[which(summaryDiffs[,2]==2)], Time=summaryDiffs[which(summaryDiffs[,2]==3)])
+```
+
+```{r }
+#| label: upset-Affy1
+upset(fromList(summaryDiffs), sets=c("Time", "E48", "E10"), keep.order=TRUE, order.by="degree", mainbar.y.label="Intersection Size of Number of DE Genes", sets.x.label="Number of DE Genes")
+```
+
+We see that the genes which show DE due to estrogen treatment after 10h and after 48h overlap quite well (207). The genes which show DE over time without estrogen treatment do not overlap much with those which respond to estrogen treatment (Time alone has 451 genes while overlapping with E10, E48, or both, has only 21, 85, and 32 genes, respectively). We also see a lot of genes which are differentially expressed upon estrogen treatment after 48h but not at 10h (313), i.e., they show DE only after a sufficiently long time. In contrast, there are only 66 genes which show DE after 10h but not after 48h, i.e., their DE is much more short-lived.
+
+## Question 2
+
+*Again using the estrogen dataset from Exercise 4, reproduce the (limma) differential expression analysis using a different design matrix (i.e., a different parameterization).*
+
+We now modify the design matrix to consider the intercepts for estimating the coefficients. The original contrasts can now be read directly from the values at different conditions without requiring a difference (e.g., the differences between estrogen absent and present after 10h is already stored in the `present10` column since the `absent10` column contains the intercepts). Thus, we now fit the limma model to the data using the modified design and contrast matrices and perform moderated t-tests for all genes.
+
+```{r }
+# create design matrix
+designAffy2 <- designAffy
+designAffy2[,1] <- rep(c(1,0), each=4)
+designAffy2[,2] <- rep(c(0,1), each=4)
+designAffy2
+
+# create contrast matrix
+cont.matrix2 <- cont.matrix
+cont.matrix2[1,1] <- 0
+cont.matrix2[2,2] <- 0
+cont.matrix2
+
+# fit the limma model and perform moderated t-tests
+fitAffy2 <- lmFit(eset, designAffy2)
+fitAffy2  <- contrasts.fit(fitAffy2, cont.matrix2)
+fitAffy2  <- eBayes(fitAffy2)
+```
+
+```{r }
+# summarize results and list genes called DE
+summaryAffy2 <- decideTests(fitAffy2, method="separate", adjust.method="BH", p.value=0.05, lfc=0)
+summaryDiffs2 <- which(summaryAffy2!=0, arr.ind=TRUE)
+summaryDiffs2 <- list(E10=summaryDiffs2[which(summaryDiffs2[,2]==1)], E48=summaryDiffs2[which(summaryDiffs2[,2]==2)], Time=summaryDiffs2[which(summaryDiffs2[,2]==3)])
+```
+
+```{r }
+#| label: upset-Affy2
+upset(fromList(summaryDiffs2), sets=c("Time", "E48", "E10"), keep.order=TRUE, order.by="degree", mainbar.y.label="Intersection Size of Number of DE Genes", sets.x.label="Number of DE Genes")
+```
+
+We see that the above UpSet plot is identical to the previous one. Thus, the modified design and contrast matrices reproduce the original limma analysis with a different parameterization.
+
+------------------------------------------------------------------------
+
+We now switch to exploring two popular pipelines for differential expression of RNA-seq data, (already) given the counts. The dataset used here is the well-known *pasilla* data, which compares the knockout of *pasilla* (a splicing factor) to a wild-type control, in *Drosophila* cells.
+
+First, we have the samples already organized into a table of metadata and this is used to list the filenames that contain the gene counts.
+
+```{r }
+samples <- read.table("samples.txt", header=TRUE, row.names=5, stringsAsFactors=FALSE)
+samples
+```
+
+We then read in the 7 count files and consolidate it into a single table - the `readDGE()` function simply saves us from having to do this manually.
+
+```{r }
+counts <- DGEList(readDGE(samples$countfile)$counts)
+head(counts)
+```
+
+We now trim the column names to get a 'nice' grouping variable to use in the design matrix.
+
+```{r }
+(grp <- gsub("\\-.[0-9]*","",colnames(counts)))
+```
+
+We then perform likelihood-ratio tests using edgeR to identify putative differentially expressed genes.
+
+## Question 3
+
+*Fix the given code to work on the count table that was already read in. Add in some spot checks, including an MDS plot from `plotMDS()` (or similar), a look at the dispersion-mean plot using `plotBCV()` (or similar) and a look at the overall M vs A plot using `plotSmear()` (or similar).*
+
+At this point, we perform the first spot check using an MDS plot on the raw count data to visualize how different the samples are to each other with respect to counts for each gene.
+
+```{r }
+#| label: mds
+#| fig-height: 5
+#| fig-width: 5
+plotMDS(counts, col=c(rep("blue",3), rep("red",4)), cex=0.7)
+```
+
+We see that some of the samples are relatively close to each other, while a few are very far off. This could point to the widely different library sizes of each sample, since the MDS plot is essentially a way of plotting a distance matrix which stores the mean square deviations in absolute counts for each gene for each sample. Thus, in order to go through the standard limma pipeline, we need to normalize the counts such that the library sizes are the same for each sample.
+
+Next, we construct the design matrix to include the intercepts, such that the log-fold-changes can be read directly without using a contrast matrix. We then normalize the library sizes in order to estimate the dispersions, and then we fit the linear model and perform likelihood ratio tests.
+
+```{r }
+design <- model.matrix(~1+grp)
+
+# estimate dispersion after normalization of counts
+countsDisp <- estimateDisp(normLibSizes(counts), design)
+
+# fit the linear model and perform likelihood ratio tests
+fit <- glmFit(countsDisp, design)
+lrt <- glmLRT(fit, coef=2)
+topTags(lrt)
+```
+
+Here we have the genes listed in increasing order of the p-values, thus, we can identify all genes that are differentially expressed as having p-values lower than a chosen cutoff.
+
+Next, we perform the second spot check using a BCV plot to visualize the relationship between the dispersion and the mean counts.
+
+```{r }
+#| label: bcv
+#| fig-height: 5
+#| fig-width: 5
+plotBCV(countsDisp)
+```
+
+We see that the dispersion is a bit high for very low counts which is to be expected. As the mean counts get bigger, the dispersions follow the trend very well, thus, there are not many outliers. Importantly, the trend does not seem to increase past the common value for higher mean counts, i.e., the variance does not seem to grow too much with the mean.
+
+We then perform the third and final spot check using an M-A plot to visualize the spread in log-fold-change of genes as a function of the mean counts.
+
+```{r }
+#| label: smear
+#| fig-height: 5
+#| fig-width: 5
+plotSmear(lrt, pch=20, cex=0.4, xlab="Average log CPM")
+```
+
+Here we see that the log-fold-change values tend roughly towards 0, i.e., there is no apparent difference in positive and negative log-fold-change values. Notably, we see that the log-fold-change values do not go to 0 as the mean counts increase, rather, the spread in their values about 0 is quite clear. This points to the fact that in the expression for the coefficient of variation $CV^2 = \frac{1}{\mu} + \phi$, the biological variability term $\phi$ survives even when $\mu$ is large (this was also seen in the BCV plot), thus, we see a non-zero coefficient of variation which is reflected in the spread of the log-fold-change values.
+
+## Question 4
+
+*For the MDS plot, investigate what happens differently when you call `plotMDS()` on the DGEList object and when you call it on the normalized counts -- for normalized counts, see the `cpm()` function. Explain why it is different. You may need to read the documentation or even read the code of the `plotMDS.DGEList` or `plotMDS.default` functions to understand the difference.*
+
+As we saw earlier, the library sizes of the samples are quite different, thus it is not meaningful to compare the counts directly across samples.
+
+```{r }
+# display differences in library sizes
+print("Library sizes for each sample:")
+colSums(counts$counts)
+print(paste0("Mean of library sizes = ", mean(colSums(counts$counts))))
+print(paste0("Standard deviation of library sizes = ", round(sd(colSums(counts$counts)))))
+print(paste0("Coefficient of variation of library sizes = ", round(sd(colSums(counts$counts))/mean(colSums(counts$counts)),3)))
+```
+
+We see that the standard deviation of the library sizes is quite high in comparison to the mean, and thus the coefficient of variation is also quite high (0.368). To highlight the impact of the varying library sizes on the MDS plots, we now plot the MDS plot for the raw counts and the normalized counts (counts per million).
+
+```{r }
+#| label: mdsCPM
+#| fig-subcap: 
+#|     - "(a) Using raw counts"
+#|     - "(b) Using normalized counts (CPM)"
+#| layout-ncol: 2
+#| column: page
+#| fig-height: 5
+#| fig-width: 5
+
+plotMDS(counts, col=c(rep("blue",3), rep("red",4)), cex=0.7)
+plotMDS(cpm(counts), col=c(rep("blue",3), rep("red",4)), cex=0.7)
+```
+
+We see the difference between the two plots immediately - the MDS plot based on the raw counts does not separate the treated and untreated samples well, and the spacing of the samples from each other is quite haphazard. In contrast, when we use normalized counts, we see that the untreated samples are well separated from the treated samples on the second axis. However, there seems to be a much bigger difference in the first axis due to the first treated sample being quite different from the two other treated samples. Nevertheless, it is clear that the MDS plot does a much better job of separating the two kinds of samples when using normalized counts as opposed to raw counts.
+
+The reason behind the above difference is that MDS plots rely on a distance matrix which stores the mean square deviations in counts for each gene for each sample. Thus, when we use raw counts, the distances scale proportional to the library sizes of the samples, which leads to greater separation between samples which have bigger library sizes, even if the individual counts are similar in proportion to the respective library sizes. This effect is eliminated when we normalize the counts, since the library sizes become equal for all samples, and the distances are now more reflective of actual differences between samples. This is why we normalize the library sizes before fitting the count data to the linear model and subsequent statistical testing, because we want to observe actual differences and not those induced by varying library sizes.
+
+## Question 5
+
+*Fix the given code to work with the count dataset above and then do some spot checks of the genes called DE. For example, make a plot of the estimated fold changes for the two methods (limma-voom and edgeR), compare the P-values of the two methods, or create a Venn diagram of the called sets of DE genes at a set threshold.*
+
+We first transform the raw counts with voom and then observe the mean-variance relationship for the transformed data. We then fit a linear model using limma to estimate the coefficients and perform moderated t-tests to identify differentially expressed genes.
+
+```{r }
+#| label: voom
+#| fig-height: 5
+#| fig-width: 5
+v <- voom(counts, design=model.matrix(~grp), plot=TRUE)
+```
+
+```{r }
+# fit the linear model, perform moderated t-tests and summarize the statistics 
+vf <- lmFit(v, design=model.matrix(~grp))
+vf <- eBayes(vf)
+voomStats <- topTable(vf, coef=2, n=nrow(counts$counts))
+```
+
+The above plot is a bit different from that obtained using edgeR as there is greater variance at smaller mean counts, which results in a steeper trend (seen in the red lowess here). Additionally, there are quite a few genes which have very low counts (minor cluster at the left edge) which could potentially be filtered before further analysis.
+
+We now perform three spot checks to compare the results obtained from the two methods limma-voom and edgeR:
+
+a. Estimated log-fold-change for all genes
+b. p-values for likelihood ratio tests using edgeR and t-tests using limma-voom
+c. UpSet plot of sets of genes called DE at a p-value threshold of 0.05
+
+```{r }
+# summarize results and list genes called DE by edgeR and limma-voom
+summaryComp <- list(edgeR=rownames(lrt$table)[which(lrt$table$PValue<=0.05, arr.ind=TRUE)], voom=rownames(voomStats)[as.numeric(which(voomStats$P.Value<=0.05, arr.ind=TRUE))])
+```
+
+```{r }
+#| label: comps
+#| fig-subcap: 
+#|     - "(a) log-fold-change"
+#|     - "(b) p-values"
+#|     - "(c) UpSet plot"
+#| layout-ncol: 3
+#| column: page
+#| fig-width: 4
+
+ggplot(data.frame(edgeR=lrt$table$logFC[order(rownames(lrt$table))], voom=voomStats$logFC[order(rownames(voomStats))]), aes(x=edgeR, y=voom)) +
+  geom_point(shape=21, size=1.5, alpha=0.2) +
+  geom_abline(slope=1, intercept=0, color="red", lty=1, linewidth=0.3) +
+  labs(x="logFC from edgeR", y="logFC from limma-voom") +
+  xlim(c(-5.6,5.6)) +
+  ylim(c(-5.6,5.6)) +
+  theme_bw()
+
+ggplot(data.frame(edgeR=lrt$table$PValue[order(rownames(lrt$table))], voom=voomStats$P.Value[order(rownames(voomStats))]), aes(x=edgeR, y=voom)) +
+  geom_point(shape=21, size=1.5, alpha=0.2) +
+  geom_abline(slope=1, intercept=0, color="red", lty=1, linewidth=0.3) +
+  scale_x_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(10^-8, 10^0)) +
+  scale_y_continuous(expand=c(0, 0), trans=log10_trans(), breaks=trans_breaks("log10", function(x) 10^x), labels=trans_format("log10", math_format(10^.x)), limits = c(10^-8, 10^0)) +
+  labs(x="p-values from edgeR", y="p-values from limma-voom") +
+  theme_bw()
+
+upset(fromList(summaryComp), sets=c("voom", "edgeR"), keep.order=TRUE, order.by="degree", mainbar.y.label="Intersection Size of Number of DE Genes", sets.x.label="Number of DE Genes")
+```
+
+From the log-fold-change scatter plot, we see that most log-fold-changes are reported to be very similar by both methods (along the $y=x$ line). However, there are some values which are reported high by edgeR and low by limma-voom at higher log-fold-changes, and vice versa, which almost look to be following a sigmoidal trend on the log-scale. 
+
+From the p-value scatter plot, we see that even though the higher p-values are similar for the two methods, once the p-values start getting smaller and into the actual range where features are called DE, the similarity breaks down. edgeR reports much lower p-values than limma-voom, but this is most likely due to different statistical tests being performed by the two methods (likelihood ratio tests and moderated t-tests, respectively). Nevertheless, this disagreement only kicks in at values roughly lower than 0.01, thus, most genes that are called DE (setting a threshold of 0.05) are called so simultaneously by both methods. 
+
+Lastly, from the UpSet plot, we see that most genes called DE are done so by both methods (1429). Only a small number in comparison are called DE solely by edgeR (113) or solely by limma-voom (291). Thus, we can conclude from the above spot checks that the two methods work almost similarly well in our count data analysis pipeline.
+
+..

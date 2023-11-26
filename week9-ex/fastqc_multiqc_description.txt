@@ -1,0 +1,27 @@
+MultiQC Report
+==============
+
+Salmon
+------
+The number of aligned reads is very low (~100) for all 6 samples.
+
+STAR
+----
+Except one sample, the number of mapped reads is ~500k-700k, out of which 99.8% of reads are uniquely mapped for each sample.
+
+Cutadapt
+--------
+Almost all reads pass the filtering. Most reads have only 0-5 bases trimmed.
+
+FastQC
+------
+Sequence Counts: For all 6 samples, around 75% are unique reads while 25% are duplicate reads.
+Sequence Quality Histograms: All 6 samples have high quality sequences throughout their lengths (Phred scores > 30) after Cutadapt trimming.
+Per Sequence Quality Scores: Almost all reads across samples have Phred scores > 28.
+Per Base Sequence Content: All 6 samples fail this criterion since the 5' ends have biased sequence compositions, but this is true for all RNA-Seq datasets and does not affect downstream analysis.
+Per Sequence GC Content: The distribution of GC content is slightly left-skewed for all 6 samples, but not abnormally so.
+Per Base N Content: There are very few bases for all 6 samples where N is called instead of a valid base.
+Sequence Length Distribution: Most reads have a read length of 70-75 bp.
+Sequence Duplication Levels: The level of duplication for every sequence is quite low.
+Overrepresented Sequences: Less than 1% of reads are overrepresented for each of the 6 samples.
+Adapter Content: Adapter contamination is less than 0.1% for each of the 6 samples.

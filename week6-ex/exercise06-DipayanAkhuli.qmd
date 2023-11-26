@@ -1,0 +1,210 @@
+---
+title: "Exercise 06"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+```
+
+## Load packages
+
+```{r }
+library(ggplot2)
+library(scales)
+library(reshape2)
+library(pracma)
+```
+
+## Data import
+
+```{r }
+# read featureCounts results
+countResult1 = readRDS("countResult1.RDS")
+countResult2 = readRDS("countResult2.RDS")
+
+samples <- c("N1", "N2", "N3", "T1", "T2", "T3")
+
+# read gene level and isoform level RSEM results for all samples
+filesGenesRSEM <- list.files(path=getwd(), pattern="genes", full.names = TRUE)
+filesIsoformsRSEM <- list.files(path=getwd(), pattern="isoforms", full.names = TRUE)
+for (i in 1:6) {
+  assign(paste0("genesRSEM_", samples[i]), read.table(filesGenesRSEM[i], sep="\t", header=TRUE))
+  assign(paste0("isoformsRSEM_", samples[i]), read.table(filesIsoformsRSEM[i], sep="\t", header=TRUE))
+}
+```
+
+## Question 1
+
+*Depending on the featureCount mode, how many alignments are ignored during counting?*
+
+For both `featureCounts` mapping modes (Unique and Multi), we calculate the percentage of unassigned reads.
+
+```{r }
+# dfAlign stores percentages of unassigned reads for all samples for both mapping modes
+dfAlign <- data.frame(matrix(0, nrow=12, ncol=3))
+colnames(dfAlign) <- c("Sample", "Unassigned", "Mode")
+dfAlign$Sample <- rep(samples, 2)
+dfAlign$Mode <- rep(c("Without multimapping", "With multimapping"), each=6)
+
+# for unique mapping mode
+dfAlign$Unassigned[1:6] <- 100*as.numeric(colSums(as.matrix(countResult1$stat[2:nrow(countResult1$stat),2:7])))/(as.numeric(countResult1$stat[1,2:7])+colSums(as.matrix(countResult1$stat[2:nrow(countResult1$stat),2:7])))
+
+# for multi mapping mode
+dfAlign$Unassigned[7:12] <- 100*as.numeric(colSums(as.matrix(countResult2$stat[2:nrow(countResult2$stat),2:7])))/(as.numeric(countResult2$stat[1,2:7])+colSums(as.matrix(countResult2$stat[2:nrow(countResult1$stat),2:7])))
+```
+
+```{r }
+#| label: unassigned-reads
+ggplot(dfAlign, aes(x=Sample, y=Unassigned, fill=Mode)) + 
+  geom_col(position="dodge") +
+  geom_text(aes(label=round(Unassigned,3)), size=3, position=position_dodge(width=0.9), vjust=-1) +
+  labs(x="Sample", y="Percentage of reads not aligned (%)") +
+  ylim(c(0,4)) +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+We see that the percentage of reads that are not aligned is much lower when multimapping is allowed. This is expected because a significantly high number of reads would naturally align with multiple reference locations, either because of homology sequences elsewhere in the genome, or due to the occurrence of slightly varying transcripts for a given gene. Since the unique mapper ignores these reads, the percentage of reads that it does not align is quite higher than for the multimapper. Also notable is the fact that the alignment percentage is consistently higher for the normal samples as compared to the treated samples.
+
+## Question 2
+
+*Compare the counts from featureCounts with the genelevel counts from RSEM. Which genes have different values?*
+
+```{r }
+# dfCount stores counts from featureCounts (using multimapper) and posterior_mean_count from RSEM for all genes
+# sort rows in increasing order of GeneID
+dfCount <- data.frame(sort(countResult2$annotation$GeneID))
+dfCount[,2:7] <- countResult2$counts[order(countResult2$annotation$GeneID),]
+for (i in 1:6) {
+  dfCount[,i+7] <- get(paste0("genesRSEM_", samples[i]))$posterior_mean_count
+}
+
+# sumCountsRSEM stores sum of counts from RSEM for each sample
+sumCountsRSEM <- as.numeric(colSums(as.matrix(dfCount[,8:13])))
+
+# reshape data for easy scatter plot in order to compare counts between featureCounts and RSEM
+countData <- Reshape(as.matrix(dfCount[,2:13]), 6*nrow(countResult2$counts), 2)
+
+# log-transform counts for better visualization, also calculate log difference
+dfCount <- data.frame(GeneID=rep(sort(countResult2$annotation$GeneID), 6), featureCounts=log1p(countData[,1]), RSEM=log1p(countData[,2]), logDiff=log1p(countData[,1])-log1p(countData[,2]), Sample=rep(c("Normal","Treated"), each=3*nrow(countResult2$counts)))
+```
+
+```{r }
+#| label: count-comparison
+ggplot(dfCount, aes(x=featureCounts, y=RSEM)) +
+  geom_point(shape=21, size=1, alpha=0.2) +
+  labs(x="log-transformed Counts from featureCounts (with multimapping)", y="log-transformed Counts from RSEM") +
+  xlim(c(0,12.5)) +
+  ylim(c(0,12.5)) +
+  facet_wrap(~Sample) +
+  theme_bw()
+```
+
+We see that most of the counts from featureCounts correspond well to the respective counts from RSEM (along the $y=x$ line). However, there is a large population of genes for which the RSEM counts are much lower than those from featureCounts (lying below the $y=x$ line). A lot of these genes have considerably large counts from featureCounts but 0 counts from RSEM. These could correspond to the reads that would be correctly aligned and counted by RSEM at the transcript level but not at the gene level due to the presence of variations in transcripts of the same gene.
+
+From the above scatter plot we see that counts from featureCounts are generally equal to or larger than those from RSEM. Thus, we now identify the genes which show a log-difference of at least 3 in counts obtained from featureCounts as compared to counts obtained from RSEM, in at least 1 of the 6 samples ("union" sense), or in all 6 samples ("intersection" sense).
+
+```{r }
+# diffGenes1 stores GeneID's of genes which show a log-difference of 3 in at least 1 of the 6 samples
+diffGenes1 <- sort(unique(dfCount[which(dfCount$logDiff>3),]$GeneID))
+
+# diffGenes6 stores GeneID's of genes which show a log-difference of 3 in all 6 samples
+diffGenes6 <- names(table(dfCount[which(dfCount$logDiff>3),]$GeneID)[which(table(dfCount[which(dfCount$logDiff>3),]$GeneID)==6)])
+
+print(paste0("Number of genes which show a log-difference of at least 3 in at least 1 of the 6 samples = ", length(diffGenes1)))
+print(paste0("Number of genes which show a log-difference of at least 3 in all 6 samples = ", length(diffGenes6)))
+```
+
+## Question 3
+
+*How does the sum of the counts in RSEM compare to the number of the aligned reads?*
+
+```{r }
+# dfRead stores the mean sum of counts from RSEM and mean number of aligned reads from featureCounts
+dfRead <- data.frame(Method=c("featureCounts (Multi)", "featureCounts (Unique)", "RSEM"), meanSum=c(mean(as.numeric(countResult2$stat[1,2:7])), mean(as.numeric(countResult1$stat[1,2:7])), mean(sumCountsRSEM)))
+dfRead
+```
+
+```{r }
+#| label: sum-counts
+ggplot(dfRead, aes(x=Method, y=meanSum, fill=Method)) +
+  geom_bar(stat="identity", color="black", position=position_dodge()) +
+  labs(x="Method", y="Sum of Counts or Aligned Reads") +
+  theme_bw() +
+  theme(axis.title.x=element_text(vjust=-1), axis.title.y=element_text(vjust=+3), panel.border=element_blank(), axis.line=element_line(color="black", linewidth=0.5, lineend="square"))
+```
+
+We see that the mean sum of the counts from RSEM over all samples is roughly similar, or rather slightly smaller than the mean number of aligned reads by featureCounts in both the multi and unique mapping modes. As alluded to in the scatter plot above, this difference could be due to the few genes which have 0 counts from RSEM but large counts from featureCounts.
+
+## Question 4
+
+*Compute pair-wise correlation of the samples based on the isoform counts and gene level counts.*
+
+Pair-wise correlation of the 6 samples are computed based on the isoform counts and gene level counts from RSEM, and plotted as two separate correlation grids.
+
+```{r }
+# dfCorGenes and dfCorIsoforms store posterior_mean_count for all genes/transcripts for all samples
+dfCorGenes <- data.frame(1:6, rep(c("Normal","Treated"), each=3))
+dfCorIsoforms <- data.frame(1:6, rep(c("Normal","Treated"), each=3))
+for (i in 1:6) {
+  dfCorGenes[i,3:(2+nrow(genesRSEM_N1))] <- get(paste0("genesRSEM_", samples[i]))$posterior_mean_count
+  dfCorIsoforms[i,3:(2+nrow(isoformsRSEM_N1))] <- get(paste0("isoformsRSEM_", samples[i]))$posterior_mean_count
+}
+rownames(dfCorGenes) <- samples
+colnames(dfCorGenes) <- c("Sample", "Treatment", genesRSEM_N1$gene_id)
+rownames(dfCorIsoforms) <- samples
+colnames(dfCorIsoforms) <- c("Sample", "Treatment", isoformsRSEM_N1$transcript_id)
+
+# corGenes and corIsoforms store the pairwise Pearson correlation coefficients between the 6 samples
+corGenes <- matrix(0, 6, 6)
+corIsoforms <- matrix(0, 6, 6)
+for (i in 1:6) {
+  for (j in 1:i) {
+    corGenes[i,j] <- cor(as.numeric(dfCorGenes[i,3:ncol(dfCorGenes)]), as.numeric(dfCorGenes[j,3:ncol(dfCorGenes)]))
+    corIsoforms[i,j] <- cor(as.numeric(dfCorIsoforms[i,3:ncol(dfCorIsoforms)]), as.numeric(dfCorIsoforms[j,3:ncol(dfCorIsoforms)]))       
+  }
+}
+
+# convert corGenes and corIsoforms to symmetric dataframes for visualization
+corGenes <- as.data.frame(corGenes+t(corGenes)-diag(diag(corGenes)))
+corIsoforms <- as.data.frame(corIsoforms+t(corIsoforms)-diag(diag(corIsoforms)))
+colnames(corGenes) = samples
+colnames(corIsoforms) = samples
+
+# melt corGenes and corIsoforms for visualization
+meltedCorGenes <- cbind(cond=rep(dfCorGenes$Treatment, 6), melt(cbind(sample=samples, corGenes), id.vars="sample"))
+meltedCorIsoforms <- cbind(cond=rep(dfCorIsoforms$Treatment, 6), melt(cbind(sample=samples, corIsoforms), id.vars="sample"))
+```
+
+```{r }
+#| label: correlation
+#| fig-subcap: 
+#|     - "(a) Based on gene counts"
+#|     - "(b) Based on isoform counts"
+#| layout-ncol: 2
+#| column: page
+for (i in 1:2) {
+    print(ggplot(get(c("meltedCorGenes", "meltedCorIsoforms")[i]), aes(x=factor(sample, level=c("N1", "N2", "N3", "T1", "T2", "T3")), y=variable, fill=value)) + 
+    geom_tile(color="black") +
+    scale_fill_gradient2(low="blue", high="red", mid="white", midpoint=0.5, limit=c(0,1), space="Lab", name="Correlation") +
+    geom_text(aes(label=round(value,3)), size=3) +
+    theme_bw() + 
+    theme(legend.text=element_text(size=9), legend.title=element_text(size=11), panel.grid.major=element_blank(), panel.border=element_blank(), panel.background=element_blank(), axis.ticks=element_blank(), axis.title.y=element_blank(), axis.title.x=element_blank()) +
+    coord_fixed(ratio=1) +
+    guides(fill=guide_colourbar(barwidth=0.5, barheight=20, ticks=FALSE)))
+}
+```
+
+In both cases, whether we use gene level or isoform levels counts, we see that the normal samples correlate well to each other and the treated samples also correlate well to each other (correlation>0.8), with the correlation values being very similar in both cases. However, the correlation between normal and treated samples is very low in both cases, and is slightly lower when using isoform counts as compared to when using gene counts. This could point to a preliminary inference that the differences between normal and treated samples is more prominent at the transcript level (i.e., variation in levels of different transcripts of the same gene upon treatment) than at the gene level (i.e., changes in total transcription levels per gene).
+
+..

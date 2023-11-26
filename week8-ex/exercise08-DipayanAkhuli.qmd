@@ -1,0 +1,247 @@
+---
+title: "Exercise 08"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r, output=FALSE}
+library(ggplot2)
+library(scales)
+library(limma)
+library(edgeR)
+library(UpSetR)
+library(pasilla)
+library(DEXSeq)
+library(BiocParallel)
+```
+
+## Question 1
+
+_Simulate data from the sine curve (from `0` to `2*pi`) with Gaussian noise added (as shown in the lecture). Try and “normalize” the sine curve data. That is, subtract the trend of the data, such that if the normalization succeeds, you are left with normally distributed data centered around zero. After this: i) make a plot of the normalized data; ii) make a plot of the difference between the truth (sine curve) and the loess/lowess estimate; iii) create a quantile-quantile (against Gaussian) plot of the normalized data. Comment on the results. Did your normalization work? Does it look (sufficiently) Gaussian? You may need to play with parameters to get a “good” lowess/loess estimate in the first place._
+
+We try various values of `f` (smoother span) for the lowess estimates in order to best fit the sine trend of the simulated data.
+
+```{r }
+# simulate data
+set.seed(1)
+x <- runif(1000, 0, 2*pi)
+y <- sin(x) + rnorm(1000, sd=0.3)
+
+# smoother spans and colors for different lowess estimates
+f <- c(0.1, 0.15, 0.5)
+colors <- c("f = 0.1"="red", "f = 0.15"="green", "f = 0.5"="blue")
+
+# dataNorm stores the simulated data and the lowess estimates in sorted order of x
+dataNorm <- data.frame(x=sort(x), y=y[order(x)], l1=lowess(y~x, f=f[1])$y, l2=lowess(y~x, f=f[2])$y, l3=lowess(y~x, f=f[3])$y)
+```
+
+```{r }
+#| label: sim-data
+#| fig-height: 4
+ggplot(dataNorm, aes(x, y)) +
+  geom_point(shape=21, size=1.5, alpha=0.5) +
+  geom_line(aes(y=l1, color=labels(colors)[1])) + 
+  geom_line(aes(y=l2, color=labels(colors)[2])) +
+  geom_line(aes(y=l3, color=labels(colors)[3])) +
+  xlim(c(0,2*pi)) + ylim(c(-2,2)) +
+  labs(color="Smoother span") +
+  scale_colour_manual(values=colors) +
+  theme_bw()
+```
+
+We see that as the smoother span is increased, the fitted trend becomes more and more constrained. We choose `f=0.15` which appears to fit the sine trend the best, as higher values allow less freedom while lower values tend to overfit to the Gaussian noise.
+
+```{r }
+#| label: norm-data
+#| fig-subcap: 
+#|     - "(a) Normalized data"
+#|     - "(b) Density of normalized data"
+#|     - "(c) Difference between truth and lowess estimate"
+#|     - "(d) Quantile-quantile plot against Gaussian distribution"
+#| layout-nrow: 2
+#| layout-ncol: 2
+#| column: page
+#| fig-width: 4
+#| fig-height: 4
+
+dataNorm$y_norm <- dataNorm$y - dataNorm$l2
+ggplot(dataNorm, aes(x, y_norm)) +
+  geom_point(shape=21, size=1.5, alpha=0.5) +
+  xlim(c(0,2*pi)) + ylim(c(-1.1,1.1)) +
+  labs(y="Normalized y") +
+  theme_bw()
+
+ggplot(dataNorm, aes(y_norm)) +
+  stat_function(fun=dnorm, args=list(mean=0, sd=0.3), color="red", show.legend=TRUE) +
+  geom_density() +
+  xlim(c(-2,2)) +
+  labs(x="Normalized y", y="Density") +
+  theme_bw()
+
+dataNorm$y_diff <- sin(dataNorm$x) - dataNorm$l2
+ggplot(dataNorm, aes(x, y_diff)) +
+  geom_point(shape=21, size=1.5, alpha=0.5) +
+  xlim(c(0,2*pi)) + ylim(c(-1.1,1.1)) +
+  labs(y="Difference b/w truth and lowess estimate") +
+  theme_bw()
+
+ggplot(dataNorm, aes(sample=(1/0.3)*y_norm)) +
+  stat_qq(shape=21, size=1.5, alpha=0.5) +
+  geom_abline(color="red") +
+  xlim(c(-3.5,3.5)) + ylim(c(-3.5,3.5)) +
+  labs(x="Gaussian theoretical quantiles", y="Normalized y quantiles") +
+  theme_bw()
+```
+
+We first plot the data after subtracting the lowess estimate (a), and observe that the normalized data is now centered around 0 with the periodic trend removed. The density of the normalized data (b) very closely follows a Gaussian distribution with `sd=0.3` (shown in red), which is the same as for the Gaussian noise added to the sine curve initially. Also, the difference between the ground truth sine curve and the lowess estimate (c) is quite small throughout. Finally, the quantile-quantile plot of the normalized data against a Gaussian distribution (d) follows the `y=x` line very well, thus, we conclude that the normalization was successful and that the normalized data very closely follows a Gaussian distribution.
+
+## Question 2
+
+*Take the data from Exercise 7 and produce an MDS plot again, but this time color the points according to the `libtype` covariate in the samples table: SE = single end, PE = paired end (i.e., a technical detail of the library construction); perhaps also label the points on the MDS plot using the `shortname` column to make them easy to distinguish. Comment on the relative positions of the samples.*
+
+We create an MDS plot of the normalized counts (counts per million), coloring the samples according to the `libtype` covariate.                                  
+
+```{r }
+samples <- read.table("samples.txt", header=TRUE, row.names=5, stringsAsFactors=FALSE)
+counts <- DGEList(readDGE(samples$countfile)$counts)
+```
+
+```{r }
+#| label: mds
+#| fig-height: 5
+plotMDS(cpm(counts), col=2+(samples$libtype=="PE"), cex=0.7, labels=samples$shortname)
+```
+
+We see that the samples are very well separated in the first dimension according to the `libtype` covariate, with all the samples using paired-end libraries on the left and all the samples using single-end libraries on the right. In contrast, as noted in Exercise 7, the treated and control samples were only well-separated in the second dimension. This seems to imply that the differences in log-fold-change of counts between samples are more strongly influenced by the library type used for library construction rather than the knockout state.
+
+## Question 3
+
+*Put a factor variable for the `libtype` covariate in the design matrix and redo the edgeR or limma differential expression analysis from Exercise 7 (i.e., include also the biological factor of interest, knockout state, in the design matrix). This now represents modeling where we are still interested in the knockout state, but the model now adjusts for the effects of `libtype` (with some assumptions). Compare the set of genes called DE from Exercise 7 (i.e., without accounting for the covariate) to this new analysis. Identify and plot (normalized) expression levels of a gene that is affected solely by library type (i.e., and not by knockout state).*
+
+We modify the design matrix constructed in Exercise 7 by adding another factor variable corresponding to the `libtype` covariate, which takes a value of `0` for paired-end and `1` for single-end. We then perform the same edgeR differential expression analysis, in order to identify genes that are called DE due to the knockout state with/without accounting for the `libtype` covariate as well as those that are called DE due to the library type itself.
+
+```{r }
+grp <- gsub("\\-.[0-9]*", "", colnames(counts))
+libtype <- samples$libtype
+
+design7 <- model.matrix(~1+grp)
+(design8 <- model.matrix(~1+grp+libtype))
+
+# estimate dispersion after normalization of counts
+countsDisp7 <- estimateDisp(normLibSizes(counts), design7)
+countsDisp8 <- estimateDisp(normLibSizes(counts), design8)
+
+# fit the linear model and perform likelihood ratio tests
+fit7 <- glmFit(countsDisp7, design7)
+lrt7 <- glmLRT(fit7, coef=2)
+fit8 <- glmFit(countsDisp8, design8)
+lrt8 <- glmLRT(fit8, coef=2)
+
+# perform likelihood ratio tests for libtype variable instead of treatment variable
+lrt8Lib <- glmLRT(fit8, coef=3)
+```
+
+```{r }
+# effect of knockout without accounting for libtype covariate 
+topTags(lrt7)
+# effect of knockout accounting for libtype covariate
+topTags(lrt8)
+# effect of libtype
+topTags(lrt8Lib)
+
+# check which genes are differentially expressed for the 3 above scenarios
+summary <- list(rownames(lrt7$table)[which(lrt7$table$PValue<=0.05, arr.ind=TRUE)], rownames(lrt8$table)[which(lrt8$table$PValue<=0.05, arr.ind=TRUE)], rownames(lrt8Lib$table)[which(lrt8Lib$table$PValue<=0.05, arr.ind=TRUE)])
+names(summary) <- c("Affected by knockout without libtype", "Affected by knockout with libtype", "Affected by libtype")
+```
+
+```{r }
+#| label: upset
+upset(fromList(summary), sets=c("Affected by libtype", "Affected by knockout with libtype", "Affected by knockout without libtype"), keep.order=TRUE, order.by="degree", mainbar.y.label="Intersection Size of Number of DE Genes", sets.x.label="Number of DE Genes")
+```
+
+We observe from the above UpSet plot that there are 1514 (= 303 + 1211) genes that are called DE regardless of the `libtype` covariate. Interestingly, as many as 764 (= 352 + 412) genes are newly called DE when accounting for the covariate which were not called DE before. In contrast, there are only 28 (= 1 + 27) genes which were called DE before, but after accounting for the covariate are not called DE any longer. Thus, almost a third of all genes called DE when accounting for the covariate were ignored when the covariate was not accounted for.
+
+Coming to the effects of the library type, we see that more genes are called DE based on the library type than based on the knockout state (the MDS plot points to this observation perhaps). We see that there are 656 (= 303 + 1 + 352) genes that are called DE due to both the knockout state and the library type, 1650 (= 1211 + 27 + 412) genes that are called DE solely due to the knockout state, and an even higher number of 2196 genes that are called DE solely due to the library type.
+
+Out of the 2196 genes that are affected solely by library type, we now identify the genes that have logCPM expression values greater than 10 (i.e., very highly expressed), and out of them, we plot the CPM expression values for one gene (FBgn0032518) for each of the 7 samples.
+
+```{r }
+# identify genes affected solely by libtype (with logCPM>=10)
+genesLibOnly <- setdiff(summary[[3]], summary[[2]])
+(genesLibOnly <- genesLibOnly[which(lrt8Lib$AveLogCPM[match(genesLibOnly, rownames(lrt8Lib$table))]>=10)])
+```
+
+```{r }
+#| label: lib-only
+#| fig-height: 5
+ggplot(data.frame(x=samples$rep, exp=cpm(counts)[rownames(counts)==genesLibOnly[19]], lib=samples$libtype), aes(x=x, y=exp, fill=lib)) + 
+  geom_col(position="dodge") +
+  labs(x="Sample", y="CPM expression for gene FBgn0032518", fill="Library type") +
+  theme_bw()
+```
+
+We see very clearly that the expression values are dependent on the library type and not on the knockout state, i.e., samples using paired-end libraries have considerably higher expression values than those using single-end libraries, regardless of the knockout state.
+
+--------------------------------------------------------------------------------
+
+Next, we will explore “differential splicing”, using the same _pasilla_ dataset, but here we will instead use exon-level summaries of the data.
+
+```{r }
+# set directory to pasilla data
+dirData <- file.path(system.file(package="pasilla"), "extdata")
+
+# list all count files and annotations
+filelist <- file.path(dirData, list.files(dirData, pattern="treated"))
+anno <- file.path(dirData, "Dmel.BDGP5.25.62.DEXSeq.chr.gff")
+
+# construct table of samples
+sampleData <- data.frame(condition=rep(c("treated","untreated"), c(3,4)), type=c("SE","PE","PE","SE","SE","PE","PE"), stringsAsFactors=TRUE)
+rownames(sampleData) <- gsub(list.files(dirData, pattern="treated"), pattern=".txt$", replacement="")
+sampleData
+```
+
+We now run a standard DEXSeq analysis on the exon-level counts of the _pasilla_ dataset in order to identify differential exon usage (DEU) across all genes.
+
+```{r }
+# construct DEXSeqDataSet object from count data
+dxd <- DEXSeqDataSetFromHTSeq(countfiles=filelist, sampleData=sampleData, design=~sample+exon+type:exon+condition:exon, flattenedfile=anno)
+
+# use 8 cores to parallelize computations
+BPPARAM <- MulticoreParam(8)
+dxd <- estimateSizeFactors(dxd)
+dxd <- estimateDispersions(dxd, BPPARAM=BPPARAM)
+dxd <- testForDEU(dxd, BPPARAM=BPPARAM)
+dxd <- estimateExonFoldChanges(dxd, BPPARAM=BPPARAM)
+dxr <- DEXSeqResults(dxd)
+```
+
+From the DEXSeq results, we first identify the exons which have some of the lowest adjusted p-values ($p \leq 10^{-100}$). We then consider the genes to which they belong as these genes would be expected to be highly differentially spliced.
+
+```{r }
+dxr@listData[["groupID"]][which((dxr@listData[["padj"]])<=1e-100)]
+```
+
+We then choose one gene (FBgn0043841) to display its differential exon usage over all its exons. In order to leave out the effects of any up-/down-regulation at the gene level and only visualize relative differential exon usage, we set `expression=FALSE, splicing=TRUE`.
+
+```{r }
+#| label: diff-splicing
+plotDEXSeq(dxr, "FBgn0043841", expression=FALSE, splicing=TRUE, legend=TRUE, cex.axis=1.2, cex=1.3, lwd=2)
+```
+
+We see that out of the 11 exons that this gene has, 8 exons are differentially used in response to the treatment (knockout). The first 2 out of these 8 exons are used more in response to the treatment while the other 6 exons are used less. Thus, we conclude that FBgn0043841 is one of the top differentially spliced genes showing differential exon usage over 8 out of 11 exons.
+
+..
