@@ -1,0 +1,2 @@
+"0","set.seed(42)"
+"0","sce <- cluster(sce, features=""type"", xdim=8, ydim=8, maxK=10)"

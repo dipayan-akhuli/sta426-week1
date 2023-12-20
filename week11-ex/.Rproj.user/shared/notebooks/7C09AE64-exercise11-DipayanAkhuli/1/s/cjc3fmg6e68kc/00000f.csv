@@ -1,0 +1,4 @@
+"0","#| label: umap-meta8"
+"0","#| fig-cap: ""Figure 7: UMAP representation of clusters at the 8-metacluster level"""
+"0","#| fig-width: 10"
+"0","plotDR(sce, color_by=""meta8"")"

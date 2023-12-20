@@ -1,0 +1,4 @@
+"0","#| label: pbmds2"
+"0","#| fig-cap: ""Figure 5: Pseudo-bulk MDS plot of samples colored by condition"""
+"0","#| fig-width: 10"
+"0","pbMDS(sce, color_by=""condition"")"

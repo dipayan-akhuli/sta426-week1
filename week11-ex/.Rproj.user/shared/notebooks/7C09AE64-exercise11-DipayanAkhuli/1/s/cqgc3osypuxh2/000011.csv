@@ -1,0 +1,6 @@
+"0",""
+"0","# cell percentages per 8-metacluster per condition"
+"0","cells_per_cluster <- sweep(dcast(data.frame(condition=colData(sce)$condition, cluster_id=cluster_ids(sce, ""meta8"")), condition~cluster_id)[,2:9], 1, 0.01*c(sum(n_cells(sce)[1:8]), sum(n_cells(sce)[9:16])), ""/"")"
+"0","rownames(cells_per_cluster) <- unique(colData(sce)$condition)"
+"0","colnames(cells_per_cluster) <- paste0(""cluster"", 1:8)"
+"0","cells_per_cluster"

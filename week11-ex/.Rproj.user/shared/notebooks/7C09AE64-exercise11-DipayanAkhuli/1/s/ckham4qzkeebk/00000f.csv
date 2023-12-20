@@ -1,0 +1,5 @@
+"0","paste(signif((proc.time() - startTime)[""elapsed""], digits=4), ""s"")"
+"1","[1]"
+"1"," ""23.27 s"""
+"1","
+"

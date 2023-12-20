@@ -1,0 +1,4 @@
+"0","#| label: heatmap-markers"
+"0","#| fig-cap: ""Figure 1: Heatmap of median marker expression across samples"""
+"0","#| fig-width: 10"
+"0","plotExprHeatmap(sce, features=""type"", row_clust=FALSE)"

@@ -1,0 +1,4 @@
+"0","#| label: pbmds1"
+"0","#| fig-cap: ""Figure 4: Pseudo-bulk MDS plot of samples colored by patient ID"""
+"0","#| fig-width: 10"
+"0","pbMDS(sce, color_by=""patient_id"")"

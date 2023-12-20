@@ -1,0 +1,242 @@
+---
+title: "Exercise 11"
+author: "Dipayan Akhuli (dipayan-akhuli)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+startTime=proc.time()
+```
+
+## Set seed
+
+```{r set seed}
+set.seed(42)
+```
+
+## Load packages
+
+```{r load packages, warning=FALSE, message=FALSE}
+library(CATALYST)
+library(diffcyt)
+library(ExperimentHub)
+library(readxl)
+library(ggplot2)
+library(reshape2)
+```
+
+## Question 1: Loading data
+
+```{r query records, warning=FALSE, message=FALSE}
+eh <- ExperimentHub()
+(bodenmiller <- query(eh, "Bodenmiller"))
+```
+
+`Bodenmiller_BCR_XL_flowSet` is associated with query ID EH2255.
+
+```{r load dataset, warning=FALSE, message=FALSE}
+(data_fs <- eh[["EH2255"]])
+colnames(data_fs)
+```
+
+Out of the 39 columns, we have a total of 33 recorded markers (with suffix `Dd`), out of which 9 are neither type nor state markers (as seen later); these are not considered any further. 
+
+The `flowSet` contains 16 experiments, i.e., there are a total of 16 samples.
+
+```{r cells per sample}
+num_cells <- rep(0, 16)
+names(num_cells) <- rownames(phenoData(data_fs))
+for (i in 1:16) {
+  num_cells[i] <- dim(exprs(data_fs[[i]]))[1]
+}
+num_cells
+```
+
+The first pair of samples (from patient 1) have only around 2800 cells each. Except this pair, all other samples have around 7000 to 17000 cells. 
+
+## Question 2: Constructing a `SingleCellExperiment`
+
+```{r load metadata, message=FALSE}
+url <- "https://zenodo.org/records/10039274/files"
+fns <- list(panel="PBMC8_panel_v3.xlsx", md="PBMC8_metadata.xlsx")
+for (fn in fns) {
+  download.file(file.path(url, fn), destfile=fn, mode="wb")
+}
+data_panel <- read_excel(fns$panel)
+data_md <- read_excel(fns$md)
+```
+
+```{r sce}
+(sce <- prepData(data_fs, data_panel, data_md))
+dim(counts(sce))
+```
+
+There are 24 markers recorded. The total number of cells over all samples is 172791.
+
+## Question 3: Type and state markers
+
+```{r markers}
+type_markers(sce)
+state_markers(sce)
+```
+
+```{r heatmap}
+#| label: heatmap-markers
+#| fig-cap: "Figure 1: Heatmap of median type marker expression across samples"
+#| fig-width: 10
+plotExprHeatmap(sce, features="type", row_clust=FALSE)
+```
+
+Some markers that seem to violate the assumption that expressions are fairly consistent across conditions are CD7 (higher in stimulated), CD4 (higher in reference), HLA-DR (higher in stimulated), and CD20 (higher in reference). Additionally, CD3 and CD14 also show slightly variable expression across samples but not systematically between conditions. The only markers which are consistently expressed similarly across samples and conditions are CD45, CD123, CD33, and IgM.
+
+## Question 4: Clustering
+
+```{r clustering, message=FALSE}
+set.seed(42)
+sce <- cluster(sce, features="type", xdim=8, ydim=8, maxK=10)
+```
+
+```{r cluster assignments, message=FALSE}
+# cell counts per meta8 cluster per sample
+dcast(data.frame(sample_id=sample_ids(sce), cluster_id=cluster_ids(sce, "meta8")), sample_id~cluster_id)
+
+# cell percentages per 8-metacluster per condition
+cells_per_cluster <- sweep(dcast(data.frame(condition=colData(sce)$condition, cluster_id=cluster_ids(sce, "meta8")), condition~cluster_id)[,2:9], 1, 0.01*c(sum(n_cells(sce)[1:8]), sum(n_cells(sce)[9:16])), "/")
+rownames(cells_per_cluster) <- unique(colData(sce)$condition)
+colnames(cells_per_cluster) <- paste0("cluster", 1:8)
+cells_per_cluster
+```
+
+Clusters 2, 4, and 6 are more frequent in the stimulated samples as compared to the reference samples, while clusters 1, 3, 5 and 7 are less frequent. Cluster 8 is almost equally frequent in both conditions. 
+
+## Question 5: Dimensionality reduction
+
+```{r dim red}
+set.seed(42)
+sce <- runDR(sce, dr="UMAP", cells=500, features="type")
+```
+
+```{r umap1}
+#| label: umap1
+#| fig-cap: "Figure 2: UMAP representation of cells colored by patient ID"
+#| fig-height: 6
+plotDR(sce, color_by="patient_id")
+```
+
+We see that cells are more or less spread homogeneously across all patients, so batch effects across patients can be neglected. 
+
+```{r umap2}
+#| label: umap2
+#| fig-cap: "Figure 3: UMAP representation of cells colored by condition"
+#| fig-height: 6
+plotDR(sce, color_by="condition")
+```
+
+We see a clear rightward shift of the stimulated samples as compared to the reference samples in the right half of the UMAP plot, with a slight upward shift also seen in the left half of the plot.
+
+## Question 6: Exploratory data analysis
+
+```{r pbmds1, warning=FALSE}
+#| label: pbmds1
+#| fig-cap: "Figure 4: Pseudo-bulk MDS plot of samples colored by patient ID"
+#| fig-width: 10
+pbMDS(sce, color_by="patient_id")
+```
+
+All 8 pairs of samples (each pair collected from the same patient) are well-separated in the first dimension. Additionally, the pair of samples from patient 6 is also well separated in the second dimension.
+
+```{r pbmds2, warning=FALSE}
+#| label: pbmds2
+#| fig-cap: "Figure 5: Pseudo-bulk MDS plot of samples colored by condition"
+#| fig-width: 10
+pbMDS(sce, color_by="condition")
+```
+
+All BCRXL-stimulated samples are on the left half of the MDS plot, well separated in the first dimension from the reference samples which are all on the right half of the plot. However, the BCRXL6 sample is somewhat close to the reference samples in the first dimension. Additionally, the reference samples are more spread out within themselves as compared to the BCRXL-stimulated samples.
+
+## Question 7: Differential state (DS) analysis
+
+```{r ds analysis, warning=FALSE, message=FALSE}
+ei <- ei(sce)
+
+# linear mixed model with a random intercept for each patient
+ds_formula1 <- createFormula(ei, cols_fixed="condition", cols_random="patient_id")
+
+# regular linear model
+ds_formula2 <- createFormula(ei, cols_fixed="condition") 
+
+# create contrasts between conditions
+contrast <- createContrast(c(0,1))
+
+# run diffcyt for the two models at the 8-metacluster level
+res_ds1 <- diffcyt(sce, ei, formula=ds_formula1, contrast=contrast, analysis_type="DS", method_DS="diffcyt-DS-LMM", clustering_to_use="meta8")
+
+res_ds2 <- diffcyt(sce, ei, formula=ds_formula2, contrast=contrast, analysis_type="DS", method_DS="diffcyt-DS-LMM", clustering_to_use="meta8")
+
+# test results for the two models
+(tbl_ds1 <- rowData(res_ds1$res))
+(tbl_ds2 <- rowData(res_ds2$res))
+```
+
+There are a total of 8*14 = 112 tests, since there are 8 metaclusters and 14 state markers. Each test is to identify whether the given state marker is expressed differentially across conditions in the given metacluster of cells.
+
+```{r test results}
+threshold <- 0.05
+
+# number of DS findings for the two models at FDR <= 0.05
+table(tbl_ds1$p_adj<=threshold)
+table(tbl_ds2$p_adj<=threshold)
+```
+
+When we account for patient variability, we identify many more DS markers (84 as compared to 42 without), thus, the sensitivity is doubled here.
+
+## Question 8: Visualizing DS results
+
+```{r visualize ds - heatmap top hits}
+#| label: heatmap-top-hits
+#| fig-cap: "Figure 6: Heatmap of z-normalized expression of the top 50 DS markers across samples"
+#| fig-width: 10
+#| fig-height: 8
+plotDiffHeatmap(sce, tbl_ds1, k="meta8", top_n=50, fdr=0.05)
+```
+
+We observe the expression of the top 50 DS markers (ordered by FDR) across samples. We indeed see that the markers are expressed more in a certain cluster for the stimulated samples as compared to the reference samples (like pPlcg2 in cluster 7) and vice versa (like pBtk in cluster 1).
+
+We now visualize a UMAP representation of the clusters at the 8-metacluster level to identify where each cluster lies, and then plot UMAPs of the specific clusters where a given marker is differentially expressed (colored by scaled expression and split by condition) for the top 10 hits.
+
+```{r visualize ds - umap clusters}
+#| label: umap-meta8
+#| fig-cap: "Figure 7: UMAP representation of clusters at the 8-metacluster level"
+#| fig-height: 6
+plotDR(sce, color_by="meta8")
+```
+
+```{r visualize ds - umap top hits}
+top_hits <- topTable(res_ds1, top_n=50)
+
+plots <- vector("list", 10)
+for (i in 1:10) {
+  print(plotDR(sce[,cluster_ids(sce, "meta8") == top_hits$cluster_id[i]], color_by=as.character(top_hits$marker_id[i]), facet_by="condition") +
+  labs(title=paste0(top_hits$marker_id[i], "(", top_hits$cluster_id[i], ")"), x="UMAP1", y="UMAP2") +
+  theme(axis.text =element_blank()))
+}
+```
+
+We see that the differential expression of the respective DS markers is quite clear in the displayed clusters. For example, the pBtk marker is consistently expressed lower in the stimulated samples as compared to the reference samples in clusters 1, 3, 4, 6, 7, and 8, while the pPlcg2 and pS6 markers are expressed higher in the stimulated samples as compared to the reference samples in clusters 7 and 3, respectively.
+
+-------------------------------------------------------------------------------------------------
+
+Runtime in seconds:
+
+```{r elapsed}
+paste(signif((proc.time() - startTime)["elapsed"], digits=4), "s")
+```
