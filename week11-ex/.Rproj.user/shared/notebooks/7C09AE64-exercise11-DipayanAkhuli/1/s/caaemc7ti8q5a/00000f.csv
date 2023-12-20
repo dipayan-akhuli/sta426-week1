@@ -1,4 +1,0 @@
-"0","#| label: umap2"
-"0","#| fig-cap: ""Figure 3: UMAP representation of cells colored by condition"""
-"0","#| fig-width: 10"
-"0","plotDR(sce, color_by=""condition"")"

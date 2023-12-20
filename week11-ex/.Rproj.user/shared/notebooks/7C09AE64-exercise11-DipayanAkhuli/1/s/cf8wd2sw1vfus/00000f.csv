@@ -1,4 +1,0 @@
-"0","#| label: umap1"
-"0","#| fig-cap: ""Figure 2: UMAP representation of cells colored by patient ID"""
-"0","#| fig-width: 10"
-"0","plotDR(sce, color_by=""patient_id"")"

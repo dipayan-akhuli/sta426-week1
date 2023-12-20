@@ -1,2 +1,0 @@
-"0","# cell counts per meta8 cluster per sample"
-"0","dcast(data.frame(sample_id=sample_ids(sce), cluster_id=cluster_ids(sce, ""meta8"")), sample_id~cluster_id)"

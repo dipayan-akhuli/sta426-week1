@@ -1,5 +1,0 @@
-"0","#| label: heatmap-top-hits"
-"0","#| fig-cap: ""Figure 6: Heatmap of z-normalized expression of the top 50 DS markers across samples"""
-"0","#| fig-width: 10"
-"0","#| fig-height: 8"
-"0","plotDiffHeatmap(sce, tbl_ds1, k=""meta8"", top_n=50, fdr=0.05)"
