@@ -1,3 +1,3 @@
-## sta426-exercises
+# sta426-exercises
 
-This repo is for all the exercises of STA426.
+Exercise repo for Statistical Analysis of High-Throughput Genomic and Transcriptomic Data HS2023
